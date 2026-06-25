@@ -1,0 +1,11 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/SpatialAI.Api/SpatialAI.Api.csproj" />
+    <Project Path="src/SpatialAI.Bridge/SpatialAI.Bridge.csproj" />
+    <Project Path="src/SpatialAI.Core/SpatialAI.Core.csproj" />
+    <Project Path="src/SpatialAI.Mcp/SpatialAI.Mcp.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/SpatialAI.Tests/SpatialAI.Tests.csproj" />
+  </Folder>
+</Solution>
