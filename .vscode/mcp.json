@@ -1,0 +1,9 @@
+{
+  "servers": {
+    "spatialai": {
+      "type": "stdio",
+      "command": "dotnet",
+      "args": ["run", "--project", "src/SpatialAI.Mcp", "--no-build"]
+    }
+  }
+}

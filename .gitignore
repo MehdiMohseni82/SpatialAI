@@ -1,0 +1,18 @@
+# Build output
+bin/
+obj/
+*.user
+.vs/
+node_modules/
+*.received.*
+
+# Local tooling / logs (not part of the demo)
+.claude/
+.playwright-mcp/
+
+# Presenter material — slides deck + run-of-show (not for the public repo)
+talk/
+
+# Secrets (never committed; user-secrets live outside the repo)
+appsettings.*.Local.json
+*.secrets.json
