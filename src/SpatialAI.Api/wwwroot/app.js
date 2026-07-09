@@ -864,7 +864,8 @@ window.addEventListener('keydown', (e) => {
   if (e.key === 'r') setMode('scale');
 });
 
-document.getElementById('btn-reset').onclick = () => fetch('/api/reset', { method: 'POST' });
+document.getElementById('btn-reset').onclick = () =>
+  fetch('/api/reset', { method: 'POST' }).then(() => refreshSuggestions());
 
 // ── Spaces manager (gallery + autosave) ──────────────────────────────────────
 const spaceCurrentEl = document.getElementById('space-current');
@@ -986,6 +987,7 @@ async function openSpace(id) {
   await refreshCurrentSpace();
   await loadChat();          // swap the chat panel to this space's conversation
   await loadSpaces();
+  refreshSuggestions();      // suggestions follow the newly-opened scene
   closeSpacesModal();
 }
 
@@ -1007,6 +1009,7 @@ async function newSpace() {
   await refreshCurrentSpace();
   await loadChat();          // fresh space → empty chat panel
   await loadSpaces();
+  refreshSuggestions();      // fresh empty scene → opener suggestions
 }
 
 async function saveAsSpace() {
@@ -1303,6 +1306,9 @@ async function send() {
     for (const action of data.actions || []) addMessage('tool', action);
     if (data.assistant) addMessage('ai', data.assistant);
     if (typeof data.messagesRemaining === 'number') { messagesRemaining = data.messagesRemaining; renderStatus(); }
+    // Instant deterministic chips from the reply; then quietly upgrade to LLM-refined ones (non-blocking).
+    if (data.budgetExhausted) renderSuggestions([]);
+    else { renderSuggestions(data.suggestions); refreshSuggestions(); }
     rerenderScene();   // pull the final scene + redraw — mobile SSE/rAF can stall while the keyboard is up
   } catch (err) {
     pending.textContent = 'Request failed: ' + err;
@@ -1311,8 +1317,35 @@ async function send() {
 
 document.getElementById('send').onclick = send;
 promptEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') send(); });
-for (const chip of document.querySelectorAll('.chip')) {
-  chip.onclick = () => { promptEl.value = chip.textContent; send(); };
+
+// ── Smart follow-up suggestions ──────────────────────────────────────────────
+// The chip row is dynamic: after each turn (and on load/reset/open) it shows context-aware next steps.
+// One delegated click handler survives re-renders — clicking a chip fills the prompt and sends it.
+const chipsEl = document.querySelector('.chips');
+if (chipsEl) chipsEl.addEventListener('click', (e) => {
+  const chip = e.target.closest('.chip');
+  if (!chip) return;
+  promptEl.value = chip.textContent;
+  send();
+});
+
+function renderSuggestions(list) {
+  if (!chipsEl) return;
+  const items = Array.isArray(list) ? list.filter(Boolean) : [];
+  if (!items.length) { chipsEl.style.display = 'none'; return; }
+  chipsEl.style.display = '';
+  chipsEl.replaceChildren(...items.map((text) => {
+    const span = document.createElement('span');
+    span.className = 'chip';
+    span.textContent = text;
+    return span;
+  }));
+}
+
+// Pull suggestions for the current scene, upgrading to LLM-refined ones when the server allows it.
+async function refreshSuggestions() {
+  const data = await jsonFetch('/api/suggestions?refine=1');
+  if (data && Array.isArray(data.suggestions)) renderSuggestions(data.suggestions);
 }
 
 // Mobile: the chat is a bottom sheet — tap its header (the drag handle) to expand/collapse the log.
@@ -1371,6 +1404,7 @@ function renderStatus() {
       if (cur.inRoom) enterRoom(cur.code);
     }
   } catch { /* ignore */ }
+  refreshSuggestions();   // seed the chip row from the current scene (openers when empty)
 })();
 
 // ── Render loop ────────────────────────────────────────────────────────────
