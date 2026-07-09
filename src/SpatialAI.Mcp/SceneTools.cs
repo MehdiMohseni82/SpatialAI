@@ -84,7 +84,7 @@ public sealed class SceneTools(SpatialApiClient api)
     [McpServerTool(Name = "create_item"), Description("Create a furniture item assembled from a detailed multi-part model. Omit size for realistic defaults; omit position to auto-place in free space.")]
     public Task<string> CreateItem(
         [Description("Item name, e.g. 'Chair'")] string name,
-        [Description("Kind. Furniture: chair, stool, desk, table, coffee_table, sofa, bed, nightstand, wardrobe, bookshelf, floor_lamp, table_lamp, monitor, tv, rug, plant, bench, mirror. Kitchen: kitchen_counter, kitchen_island, sink, stove, fridge, dishwasher. Bathroom: toilet, bathtub, basin, shower. Appliances: radiator, fireplace, ac_unit, washing_machine. Structural: column, railing, staircase. Outdoor/site: tree, bush, hedge, lawn, fence, gate, car, terrace, garage, steps. Or box/cylinder/sphere.")] string kind = "box",
+        [Description("A catalog kind — furniture, fixtures, lighting, decor, outdoor/site, or industrial (warehouse & manufacturing); e.g. office_chair, dining_table, forklift, pallet_rack, conveyor. The most specific kind wins; unknown kinds fall back to a plain box. Or box/cylinder/sphere for a primitive.")] string kind = "box",
         [Description("Optional overall width X (m)")] float? width = null,
         [Description("Optional overall height Y (m)")] float? height = null,
         [Description("Optional overall depth Z (m)")] float? depth = null,
@@ -96,8 +96,9 @@ public sealed class SceneTools(SpatialApiClient api)
         [Description("Optional target room name")] string? roomName = null,
         [Description("Facing in degrees: 0=+Z, 90=+X, 180=-Z, -90=-X. Prefer faceItem over computing this by hand.")] float? rotationY = null,
         [Description("Place ON TOP of this named item's surface (height auto-computed)")] string? onItem = null,
-        [Description("Turn this item to FACE the named item (e.g. a chair facing a desk). Preferred over rotationY.")] string? faceItem = null)
-        => api.InvokeAsync("create_item", new { name, kind, width, height, depth, colorR, colorG, colorB, positionX, positionZ, roomName, rotationY, onItem, faceItem });
+        [Description("Turn this item to FACE the named item (e.g. a chair facing a desk). Preferred over rotationY.")] string? faceItem = null,
+        [Description("Position by intent instead of raw coords: 'center', 'wall:north|south|east|west', 'corner' (or 'corner:ne|nw|se|sw'), 'near:<item>', 'left|right|front|behind:<item>'. The system keeps it inside the room and clear of others.")] string? anchor = null)
+        => api.InvokeAsync("create_item", new { name, kind, width, height, depth, colorR, colorG, colorB, positionX, positionZ, roomName, rotationY, onItem, faceItem, anchor });
 
     [McpServerTool(Name = "arrange_on"), Description("Place several items on top of a target's surface (e.g. plates on a table).")]
     public Task<string> ArrangeOn(
@@ -125,12 +126,17 @@ public sealed class SceneTools(SpatialApiClient api)
         [Description("Optional Z (m)")] float? positionZ = null,
         [Description("Optional target room name")] string? roomName = null,
         [Description("Place ON TOP of this named item's surface (height auto-computed)")] string? onItem = null,
-        [Description("Turn this item to FACE the named item")] string? faceItem = null)
-        => api.InvokeAsync("compose_item", new { name, parts, positionX, positionZ, roomName, onItem, faceItem });
+        [Description("Turn this item to FACE the named item")] string? faceItem = null,
+        [Description("Position by intent: 'center', 'wall:north|south|east|west', 'corner' (or 'corner:ne|nw|se|sw'), 'near:<item>', 'left|right|front|behind:<item>'. Preferred over positionX/Z.")] string? anchor = null)
+        => api.InvokeAsync("compose_item", new { name, parts, positionX, positionZ, roomName, onItem, faceItem, anchor });
 
-    [McpServerTool(Name = "move_item"), Description("Move an item to a new floor position.")]
-    public Task<string> MoveItem(string itemName, float positionX, float positionZ)
-        => api.InvokeAsync("move_item", new { itemName, positionX, positionZ });
+    [McpServerTool(Name = "move_item"), Description("Move an item. Prefer anchor (corner/wall/near) over raw coordinates; the system keeps it inside the room and clear of others.")]
+    public Task<string> MoveItem(
+        string itemName,
+        [Description("Where to move it, by intent: 'center', 'wall:north|south|east|west', 'corner' (or 'corner:ne|nw|se|sw'), 'near:<item>', 'left|right|front|behind:<item>'. Use for vague targets like 'the corner'.")] string? anchor = null,
+        [Description("Optional exact X (m); use only for precise coordinates.")] float? positionX = null,
+        [Description("Optional exact Z (m); use only for precise coordinates.")] float? positionZ = null)
+        => api.InvokeAsync("move_item", new { itemName, anchor, positionX, positionZ });
 
     [McpServerTool(Name = "rotate_item"), Description("Rotate an item around the vertical axis by N degrees.")]
     public Task<string> RotateItem(string itemName, float degrees)
@@ -148,9 +154,70 @@ public sealed class SceneTools(SpatialApiClient api)
     public Task<string> DeleteItem(string itemName)
         => api.InvokeAsync("delete_item", new { itemName });
 
+    [McpServerTool(Name = "create_group"), Description("Create a named group to hold related items (e.g. a production line or storage zone) so they move/delete together.")]
+    public Task<string> CreateGroup(string name, [Description("Optional parent group to nest under")] string? parentName = null)
+        => api.InvokeAsync("create_group", new { name, parentName });
+
+    [McpServerTool(Name = "add_to_group"), Description("Add existing items to a group by name (creates the group if needed).")]
+    public Task<string> AddToGroup(string groupName, [Description("Names of items to add")] string[] itemNames)
+        => api.InvokeAsync("add_to_group", new { groupName, itemNames });
+
+    [McpServerTool(Name = "move_group"), Description("Move every item in a group together. Prefer anchor (corner/wall/near), or give positionX/Z for the group's center.")]
+    public Task<string> MoveGroup(
+        string groupName,
+        [Description("center | wall:north|south|east|west | corner[:ne|nw|se|sw] | near:<item>")] string? anchor = null,
+        [Description("Optional target X for the group center (m)")] float? positionX = null,
+        [Description("Optional target Z for the group center (m)")] float? positionZ = null)
+        => api.InvokeAsync("move_group", new { groupName, anchor, positionX, positionZ });
+
+    [McpServerTool(Name = "delete_group"), Description("Delete a group; by default also deletes its items (set deleteItems=false to keep them).")]
+    public Task<string> DeleteGroup(string groupName, bool deleteItems = true)
+        => api.InvokeAsync("delete_group", new { groupName, deleteItems });
+
+    [McpServerTool(Name = "create_warehouse"), Description("Build a complete warehouse shell in one call: a large tall room with a flat roof, concrete floor and dock doors.")]
+    public Task<string> CreateWarehouse(
+        [Description("Warehouse name")] string name = "Warehouse",
+        [Description("Width along X (m)")] float width = 24f,
+        [Description("Depth along Z (m)")] float depth = 36f,
+        [Description("Wall height (m)")] float height = 8f,
+        [Description("Number of dock doors on the front wall")] int dockDoors = 2)
+        => api.InvokeAsync("create_warehouse", new { name, width, depth, height, dockDoors });
+
+    [McpServerTool(Name = "create_production_line"), Description("Build a production line: a conveyor spine with a machine station per segment (cnc, robot, press, workbench), facing the belt and grouped.")]
+    public Task<string> CreateProductionLine(
+        [Description("Group name for the line")] string name = "Production Line",
+        [Description("Number of machine stations")] int stations = 4,
+        [Description("Optional target room")] string? roomName = null,
+        [Description("center | wall:<dir> | corner[:ne|nw|se|sw] | near:<item>")] string? anchor = null,
+        [Description("Optional spacing between stations (m)")] float? spacing = null)
+        => api.InvokeAsync("create_production_line", new { name, stations, roomName, anchor, spacing });
+
+    [McpServerTool(Name = "create_rack_aisles"), Description("Lay out warehouse racking: rows of racks separated by aisles, grouped together.")]
+    public Task<string> CreateRackAisles(
+        [Description("Group name")] string name = "Racking",
+        [Description("Number of rack rows / aisles")] int rows = 3,
+        [Description("Racks per row")] int racksPerRow = 4,
+        [Description("Aisle width between rows (m)")] float? aisleWidth = null,
+        [Description("Rack kind: pallet_rack | cantilever_rack | shelving_unit")] string rackKind = "pallet_rack",
+        [Description("Optional target room")] string? roomName = null,
+        [Description("center | wall:<dir> | corner[:..] | near:<item>")] string? anchor = null)
+        => api.InvokeAsync("create_rack_aisles", new { name, rows, racksPerRow, aisleWidth, rackKind, roomName, anchor });
+
+    [McpServerTool(Name = "enclose_room"), Description("Build a fence/wall around a room's perimeter from four thin segments (grouped), optionally leaving one wall open as a gateway. Use for 'fence/wall around the yard' instead of stretching one fence, which fills the whole footprint.")]
+    public Task<string> EncloseRoom(
+        [Description("Optional target room")] string? roomName = null,
+        [Description("Barrier kind: fence (default), hedge, railing")] string kind = "fence",
+        [Description("Optional barrier height (m)")] float? height = null,
+        [Description("Optional wall to leave open as a gateway: north | south | east | west")] string? gateWall = null)
+        => api.InvokeAsync("enclose_room", new { roomName, kind, height, gateWall });
+
     [McpServerTool(Name = "list_scene"), Description("List the rooms and items currently in the scene.")]
     public Task<string> ListScene()
         => api.InvokeAsync("list_scene", new { });
+
+    [McpServerTool(Name = "delete_room"), Description("Delete a room by name, along with the items inside it.")]
+    public Task<string> DeleteRoom([Description("Name of the room to delete")] string roomName)
+        => api.InvokeAsync("delete_room", new { roomName });
 
     [McpServerTool(Name = "find_unused_areas"), Description("Find the largest unused floor areas in a room and highlight them.")]
     public Task<string> FindUnusedAreas([Description("Optional room name")] string? roomName = null)

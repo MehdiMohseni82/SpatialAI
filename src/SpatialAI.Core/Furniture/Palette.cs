@@ -21,6 +21,9 @@ public static class Palette
     public static readonly Rgba Steel    = new(0.74f, 0.76f, 0.79f);
     public static readonly Rgba SteelDark= new(0.40f, 0.42f, 0.45f);
     public static readonly Rgba Stone    = new(0.55f, 0.55f, 0.58f);
+    public static readonly Rgba SafetyYellow = new(0.92f, 0.74f, 0.10f);
+    public static readonly Rgba SafetyOrange = new(0.90f, 0.42f, 0.10f);
+    public static readonly Rgba Concrete = new(0.62f, 0.62f, 0.60f);
 
     public static Rgba Darken(Rgba c, float amt) =>
         new(c.R * (1 - amt), c.G * (1 - amt), c.B * (1 - amt), c.A);

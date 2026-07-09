@@ -1,8 +1,8 @@
 using System.Text.Json;
-using Azure;
-using Azure.AI.OpenAI;
-using OpenAI.Chat;
+using Anthropic;
+using Anthropic.Models.Messages;
 using SpatialAI.Api.Spaces;
+using SpatialAI.Core.Furniture;
 using SpatialAI.Core.Scene;
 using SpatialAI.Core.Tools;
 
@@ -10,18 +10,22 @@ namespace SpatialAI.Api;
 
 public sealed record ChatTurn(string Role, string Content);
 public sealed record ChatRequest(string Message, List<ChatTurn>? History);
-public sealed record ChatReply(string Assistant, List<string> Actions);
+public sealed record ChatReply(string Assistant, List<string> Actions, int? MessagesRemaining = null, bool BudgetExhausted = false);
 
 /// <summary>
-/// Runs the Azure OpenAI function-calling loop. Every tool the model can call maps to a method on
-/// <see cref="SceneTools"/>, which mutates the shared scene. The same SceneTools also backs the MCP server.
+/// Runs the Claude (Anthropic) tool-use loop. Every tool the model can call maps to a method on
+/// <see cref="SceneTools"/>, which mutates the scene — the same SceneTools also backs the MCP server.
+/// The tool schemas + system prompt are prompt-cached (stable prefix), the volatile scene JSON goes in
+/// the user turn, and per-message token usage is metered for the per-user budget.
 /// </summary>
 public sealed class ChatEngine
 {
-    private readonly ChatClient? _chat;
-    private readonly SceneTools _tools;
-    private readonly SceneStore _store;
-    private readonly SpaceManager _spaces;
+    private readonly AnthropicClient? _client;
+    private readonly string _model;
+    private readonly BudgetStore _budget;
+    private readonly List<ToolUnion> _toolDefs;
+    private const int MaxToolRounds = 12;   // hard loop cap (backstop for the token budget)
+    private const int MaxOutputTokens = 1024;
 
     private const string SystemPrompt = """
         You are a spatial design assistant that builds and edits a simple 3D scene by calling tools.
@@ -39,9 +43,9 @@ public sealed class ChatEngine
 
         To add a real-world object, call create_item with a `kind`. The system assembles a detailed,
         multi-part 3D model for that kind automatically — you only choose the kind and optionally
-        size/colour. Supported kinds:
-          chair, stool, desk, table, coffee_table, sofa, bed, nightstand, wardrobe, bookshelf,
-          floor_lamp, table_lamp, monitor, tv, rug, plant.
+        size/colour. Pick the most SPECIFIC kind — variants are distinct models, so don't fall back to a
+        generic when a precise one exists. Supported kinds (grouped by category):
+        {KINDS}
         Omit width/height/depth to use realistic defaults; pass them only to override. Pick a fitting
         colour (RGB 0..1) — for furniture it tints the main material (e.g. sofa fabric, lamp shade).
         For a plain block use kind = box | cylinder | sphere with explicit width/height/depth.
@@ -62,97 +66,148 @@ public sealed class ChatEngine
         several chairs around a table/desk, prefer arrange_around(targetName, 'chair', count) — it positions
         AND rotates them to face the target automatically; don't place them one-by-one.
 
-        Omit position to let the system auto-place items in free space. Keep replies short; after
-        calling tools, briefly confirm what you did.
+        Positioning: to place or move something relative to the room or another item, prefer the `anchor`
+        argument (e.g. `corner`, `corner:nw`, `wall:north`, `near:Desk`, `left:Sofa`) over guessing raw
+        coordinates. The system keeps the item fully inside the room and clear of other items, and turns
+        wall/corner pieces to face into the room — so do NOT hand-pick coordinates for vague requests like
+        "in the corner" or "against the wall". Use positionX/Z only when an exact coordinate is intended.
+        Omit both to let the system auto-place items in free space. Keep replies short; after calling
+        tools, briefly confirm what you did.
+
+        Enclosures: to fence or wall around a room/yard, call enclose_room — it rings the perimeter with
+        four thin segments (grouped). NEVER stretch a single fence across an area: a fence's depth is its
+        thickness, so a large depth fills the whole footprint instead of ringing it.
+
+        Grouping: relate items with create_group + add_to_group (e.g. a production line, a racking zone)
+        so the whole set can be repositioned with move_group or removed with delete_group as one unit.
+
+        Industrial layouts: to build a whole system in one step, prefer the layout tools over placing each
+        item — create_warehouse (a full shell with dock doors), create_production_line (conveyor + machine
+        stations) and create_rack_aisles (rows of racking). They auto-group their output so you can then
+        move_group / delete_group the whole line or zone.
 
         Spaces: the whole scene can be saved, reopened and managed. Use save_space (optionally with a
         name to Save As), new_space to start fresh, open_space to reload a saved space by name, and
         list_spaces to see what exists.
         """;
 
-    public ChatEngine(IConfiguration config, SceneTools tools, SceneStore store, SpaceManager spaces)
+    public ChatEngine(IConfiguration config, BudgetStore budget)
     {
-        _tools = tools;
-        _store = store;
-        _spaces = spaces;
-        var endpoint = config["OpenAI:AzureEndpoint"];
-        var apiKey = config["OpenAI:ApiKey"];
-        var deployment = config["OpenAI:ChatDeployment"] ?? "gpt-4o";
-        if (!string.IsNullOrWhiteSpace(endpoint) && !string.IsNullOrWhiteSpace(apiKey))
-        {
-            var client = new AzureOpenAIClient(new Uri(endpoint), new AzureKeyCredential(apiKey));
-            _chat = client.GetChatClient(deployment);
-        }
+        _budget = budget;
+        _model = config["LLM:Model"] ?? "claude-haiku-4-5";
+        var apiKey = config["LLM:ApiKey"] ?? Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY");
+        if (!string.IsNullOrWhiteSpace(apiKey))
+            _client = new AnthropicClient { ApiKey = apiKey };
+        _toolDefs = BuildTools().Select(t => new ToolUnion(t)).ToList();
     }
 
-    public bool IsConfigured => _chat is not null;
+    public bool IsConfigured => _client is not null;
 
-    public async Task<ChatReply> ChatAsync(ChatRequest request, CancellationToken ct)
+    /// <summary>
+    /// One chat turn: enforce the caller's message budget, then run the Claude tool-use loop
+    /// (prompt-cached tools+system) until the model stops calling tools or the loop cap is hit.
+    /// </summary>
+    public async Task<ChatReply> ChatAsync(ChatRequest request, string userId,
+        SceneTools tools, SceneStore store, SpaceManager spaces, CancellationToken ct)
     {
-        if (_chat is null)
-            return new ChatReply("Azure OpenAI is not configured. Set OpenAI:AzureEndpoint / OpenAI:ApiKey.", []);
+        if (_client is null)
+            return new ChatReply("Claude is not configured. Set ANTHROPIC_API_KEY (or LLM:ApiKey).", []);
 
-        var messages = new List<OpenAI.Chat.ChatMessage> { new SystemChatMessage(SystemPrompt) };
-        // Conversation context comes from the active space's transcript (per-space history), not the client.
-        foreach (var turn in _spaces.CurrentChat())
+        if (!_budget.TryConsume(userId, out var remaining))
+            return new ChatReply(
+                "You've used all your demo credits for this session. You can still build by hand — " +
+                "click an item and use W/E/R to move/rotate/scale, or press Reset. The AI chat is paused.",
+                [], MessagesRemaining: _budget.Remaining(userId), BudgetExhausted: true);
+
+        // Stable, cacheable prefix: the kind list is generated from the catalog (one source of truth).
+        var systemPrompt = SystemPrompt.Replace("{KINDS}", FurnitureFactory.DescribeKinds());
+        var system = new List<TextBlockParam>
         {
-            if (turn.Kind == "ai") messages.Add(new AssistantChatMessage(turn.Text));
-            else if (turn.Kind == "user") messages.Add(new UserChatMessage(turn.Text));
+            new() { Text = systemPrompt, CacheControl = new CacheControlEphemeral() },
+        };
+
+        // Conversation context comes from the active space's transcript (per-space history).
+        var messages = new List<MessageParam>();
+        foreach (var turn in spaces.CurrentChat())
+        {
+            if (turn.Kind == "ai") messages.Add(new MessageParam { Role = Role.Assistant, Content = turn.Text });
+            else if (turn.Kind == "user") messages.Add(new MessageParam { Role = Role.User, Content = turn.Text });
             // "tool" lines are UI-only and are not replayed to the model
         }
-        messages.Add(BuildSceneContextMessage());
-        messages.Add(new UserChatMessage(request.Message));
-
-        var options = new ChatCompletionOptions();
-        foreach (var tool in BuildTools()) options.Tools.Add(tool);
+        // Volatile scene JSON + the new user message go LAST, after the cached prefix.
+        messages.Add(new MessageParam { Role = Role.User, Content = BuildSceneContext(store) + "\n\n" + request.Message });
 
         var actions = new List<string>();
-        var completion = (await _chat.CompleteChatAsync(messages, options, ct)).Value;
+        long inTok = 0, outTok = 0, cacheRead = 0;
+        var text = "";
 
-        while (completion.FinishReason == ChatFinishReason.ToolCalls)
+        for (var round = 0; round < MaxToolRounds; round++)
         {
-            messages.Add(new AssistantChatMessage(completion));
-            foreach (var call in completion.ToolCalls)
+            var resp = await _client.Messages.Create(new MessageCreateParams
             {
-                var result = Dispatch(call.FunctionName, call.FunctionArguments);
-                actions.Add(result);
-                messages.Add(new ToolChatMessage(call.Id, result));
+                Model = _model,
+                MaxTokens = MaxOutputTokens,
+                System = system,
+                Tools = _toolDefs,
+                Messages = messages,
+            }, cancellationToken: ct);
+
+            inTok += resp.Usage.InputTokens;
+            outTok += resp.Usage.OutputTokens;
+            cacheRead += resp.Usage.CacheReadInputTokens ?? 0;
+
+            var assistant = new List<ContentBlockParam>();
+            var toolResults = new List<ContentBlockParam>();
+            foreach (var block in resp.Content)
+            {
+                if (block.TryPickText(out TextBlock? t))
+                {
+                    text = t.Text;
+                    assistant.Add(new TextBlockParam { Text = t.Text });
+                }
+                else if (block.TryPickToolUse(out ToolUseBlock? tu))
+                {
+                    assistant.Add(new ToolUseBlockParam { ID = tu.ID, Name = tu.Name, Input = tu.Input });
+                    var result = Dispatch(tu.Name, JsonSerializer.SerializeToElement(tu.Input), tools, spaces);
+                    actions.Add(result);
+                    toolResults.Add(new ToolResultBlockParam { ToolUseID = tu.ID, Content = result });
+                }
             }
-            completion = (await _chat.CompleteChatAsync(messages, options, ct)).Value;
+
+            if (resp.StopReason != "tool_use" || toolResults.Count == 0) break;
+
+            messages.Add(new MessageParam { Role = Role.Assistant, Content = assistant });
+            messages.Add(new MessageParam { Role = Role.User, Content = toolResults });
         }
 
-        var text = string.Join("\n", completion.Content.Select(p => p.Text));
+        _budget.RecordTokens(userId, inTok, outTok, cacheRead);
 
         // Record the turn on the active space so its conversation persists and stays isolated per space.
         var transcript = new List<Spaces.ChatMessage> { new("user", request.Message) };
         transcript.AddRange(actions.Select(a => new Spaces.ChatMessage("tool", a)));
         if (!string.IsNullOrEmpty(text)) transcript.Add(new("ai", text));
-        _spaces.AppendChat(transcript);
+        spaces.AppendChat(transcript);
 
-        return new ChatReply(text, actions);
+        return new ChatReply(text, actions, MessagesRemaining: remaining);
     }
 
-    private SystemChatMessage BuildSceneContextMessage()
+    private static string BuildSceneContext(SceneStore store)
     {
-        var current = _store.Current;
+        var current = store.Current;
         var body = current.Rooms.Count == 0 && current.Items.Count == 0
             ? "(the scene is currently empty)"
             : SceneContext.ToJson(current);
-        return new SystemChatMessage(
-            "CURRENT SCENE (JSON, refreshed each turn). Use it: reference existing rooms/items by name, " +
-            "do not recreate what already exists, and edit/extend existing rooms, openings and items " +
-            "rather than duplicating them.\n" + body);
+        return "CURRENT SCENE (JSON, refreshed each turn). Use it: reference existing rooms/items by name, " +
+               "do not recreate what already exists, and edit/extend existing rooms, openings and items " +
+               "rather than duplicating them.\n" + body;
     }
 
-    private string Dispatch(string name, BinaryData argsData)
-    {
-        var args = JsonDocument.Parse(argsData).RootElement;
-        return SpaceTools.Handles(name)
-            ? SpaceTools.Invoke(_spaces, name, args)
-            : SceneToolRouter.Invoke(_tools, name, args);
-    }
+    private static string Dispatch(string name, JsonElement args, SceneTools tools, SpaceManager spaces) =>
+        SpaceTools.Handles(name)
+            ? SpaceTools.Invoke(spaces, name, args)
+            : SceneToolRouter.Invoke(tools, name, args);
 
-    private static List<ChatTool> BuildTools() =>
+    private static List<Tool> BuildTools() =>
     [
         Tool("create_room", "Create a rectangular room with a floor and walls. Can include windows, doors, a ceiling and a roof.", new {
             type = "object",
@@ -233,7 +288,7 @@ public sealed class ChatEngine
             type = "object",
             properties = new {
                 name = new { type = "string", description = "Item name, e.g. 'Chair'" },
-                kind = new { type = "string", description = "Furniture: chair, stool, desk, table, coffee_table, sofa, bed, nightstand, wardrobe, bookshelf, floor_lamp, table_lamp, monitor, tv, rug, plant, bench, mirror. Kitchen: kitchen_counter, kitchen_island, sink, stove, fridge, dishwasher. Bathroom: toilet, bathtub, basin, shower. Appliances/heating: radiator, fireplace, ac_unit, washing_machine. Structural: column, railing, staircase. Tabletop: plate, cup, bowl, book, vase, laptop. Outdoor/site: tree, bush, hedge, lawn, fence, gate, car, terrace, garage, steps. Or box/cylinder/sphere for a plain block." },
+                kind = new { type = "string", description = FurnitureFactory.DescribeKindsInline() },
                 width = new { type = "number", description = "Optional overall width X (m)" },
                 height = new { type = "number", description = "Optional overall height Y (m)" },
                 depth = new { type = "number", description = "Optional overall depth Z (m)" },
@@ -245,6 +300,7 @@ public sealed class ChatEngine
                 rotationY = new { type = "number", description = "Raw facing in degrees: 0 faces +Z, 90 faces +X, 180 faces -Z, -90 faces -X. Only for deliberate non-facing rotations; to face another item use faceItem instead." },
                 faceItem = new { type = "string", description = "Turn this item to FACE the named item (e.g. a chair facing a desk). Preferred over rotationY; the system computes the angle." },
                 onItem = new { type = "string", description = "Place this item ON TOP of the named item's surface (e.g. a lamp on a desk). Height is computed automatically." },
+                anchor = new { type = "string", description = "Position by intent instead of raw coordinates: 'center', 'wall:north|south|east|west', 'corner' (or 'corner:ne|nw|se|sw'), 'near:<item>', or 'left|right|front|behind:<item>'. Preferred over positionX/Z; the system keeps the item inside the room and clear of others." },
                 roomName = new { type = "string", description = "Optional target room" }
             },
             required = new[] { "name", "kind" }
@@ -294,18 +350,20 @@ public sealed class ChatEngine
                 positionZ = new { type = "number", description = "Optional Z (m)" },
                 onItem = new { type = "string", description = "Place this object ON TOP of the named item's surface; height computed automatically." },
                 faceItem = new { type = "string", description = "Turn this object to FACE the named item." },
+                anchor = new { type = "string", description = "Position by intent: 'center', 'wall:north|south|east|west', 'corner' (or 'corner:ne|nw|se|sw'), 'near:<item>', or 'left|right|front|behind:<item>'. Preferred over positionX/Z." },
                 roomName = new { type = "string", description = "Optional target room" }
             },
             required = new[] { "name", "parts" }
         }),
-        Tool("move_item", "Move an item to a new floor position.", new {
+        Tool("move_item", "Move an item to a new floor position. Prefer `anchor` (corner/wall/near) over raw coordinates; the system keeps the item inside the room and clear of others.", new {
             type = "object",
             properties = new {
                 itemName = new { type = "string" },
-                positionX = new { type = "number" },
-                positionZ = new { type = "number" }
+                anchor = new { type = "string", description = "Where to move it, by intent: 'center', 'wall:north|south|east|west', 'corner' (or 'corner:ne|nw|se|sw'), 'near:<item>', or 'left|right|front|behind:<item>'. Use this for vague targets like 'the corner' or 'against the wall'." },
+                positionX = new { type = "number", description = "Optional exact X (m); use only for precise coordinates." },
+                positionZ = new { type = "number", description = "Optional exact Z (m); use only for precise coordinates." }
             },
-            required = new[] { "itemName", "positionX", "positionZ" }
+            required = new[] { "itemName" }
         }),
         Tool("rotate_item", "Rotate an item around the vertical axis by N degrees.", new {
             type = "object",
@@ -326,6 +384,86 @@ public sealed class ChatEngine
             type = "object",
             properties = new { itemName = new { type = "string" } },
             required = new[] { "itemName" }
+        }),
+        Tool("delete_room", "Delete a room by name, along with the items inside it.", new {
+            type = "object",
+            properties = new { roomName = new { type = "string" } },
+            required = new[] { "roomName" }
+        }),
+        Tool("create_group", "Create a named group to hold related items (e.g. a production line or a storage zone) so they can be moved or deleted together.", new {
+            type = "object",
+            properties = new {
+                name = new { type = "string", description = "Group name, e.g. 'Line A'" },
+                parentName = new { type = "string", description = "Optional parent group to nest under" }
+            },
+            required = new[] { "name" }
+        }),
+        Tool("add_to_group", "Add existing items to a group by name (creates the group if it doesn't exist).", new {
+            type = "object",
+            properties = new {
+                groupName = new { type = "string" },
+                itemNames = new { type = "array", items = new { type = "string" }, description = "Names of items to add to the group" }
+            },
+            required = new[] { "groupName", "itemNames" }
+        }),
+        Tool("move_group", "Move every item in a group together. Prefer `anchor` (corner/wall/near), or give positionX/Z to move the group's center there.", new {
+            type = "object",
+            properties = new {
+                groupName = new { type = "string" },
+                anchor = new { type = "string", description = "Where to move the group, by intent: 'center', 'wall:north|south|east|west', 'corner' (or 'corner:ne|nw|se|sw'), 'near:<item>'." },
+                positionX = new { type = "number", description = "Optional target X for the group's center (m)." },
+                positionZ = new { type = "number", description = "Optional target Z for the group's center (m)." }
+            },
+            required = new[] { "groupName" }
+        }),
+        Tool("delete_group", "Delete a group. By default also deletes its items; pass deleteItems=false to keep the items and only disband the group.", new {
+            type = "object",
+            properties = new {
+                groupName = new { type = "string" },
+                deleteItems = new { type = "boolean", description = "Also delete the group's items (default true)." }
+            },
+            required = new[] { "groupName" }
+        }),
+        Tool("create_warehouse", "Build a complete warehouse shell in one call: a large, tall room with a flat roof, concrete floor and dock doors. Prefer this over create_room for industrial spaces.", new {
+            type = "object",
+            properties = new {
+                name = new { type = "string", description = "Warehouse name" },
+                width = new { type = "number", description = "Width along X (m), default 24" },
+                depth = new { type = "number", description = "Depth along Z (m), default 36" },
+                height = new { type = "number", description = "Wall height (m), default 8" },
+                dockDoors = new { type = "integer", description = "Number of dock doors on the front wall, default 2" }
+            }
+        }),
+        Tool("create_production_line", "Build a production line in one call: a conveyor spine with a machine station per segment (cnc, robot, press, workbench), all facing the belt and grouped so they can be moved/deleted together.", new {
+            type = "object",
+            properties = new {
+                name = new { type = "string", description = "Group name for the line, e.g. 'Line A'" },
+                stations = new { type = "integer", description = "Number of machine stations, default 4" },
+                roomName = new { type = "string", description = "Optional target room" },
+                anchor = new { type = "string", description = "Where to place the line: 'center', 'wall:north|south|east|west', 'corner[:ne|nw|se|sw]', 'near:<item>'." },
+                spacing = new { type = "number", description = "Optional spacing between stations (m)" }
+            }
+        }),
+        Tool("create_rack_aisles", "Lay out warehouse racking in one call: rows of storage racks separated by aisles, grouped together. Prefer this over placing racks one by one.", new {
+            type = "object",
+            properties = new {
+                name = new { type = "string", description = "Group name, e.g. 'Racking'" },
+                rows = new { type = "integer", description = "Number of rack rows / aisles, default 3" },
+                racksPerRow = new { type = "integer", description = "Racks per row, default 4" },
+                aisleWidth = new { type = "number", description = "Aisle width between rows (m), default 2.8" },
+                rackKind = new { type = "string", description = "Rack kind: pallet_rack (default), cantilever_rack, shelving_unit" },
+                roomName = new { type = "string", description = "Optional target room" },
+                anchor = new { type = "string", description = "Where to place the block: 'center', 'wall:<dir>', 'corner[:..]', 'near:<item>'." }
+            }
+        }),
+        Tool("enclose_room", "Build a fence/wall around a room's PERIMETER from four thin segments (grouped), optionally leaving one wall open as a gateway. Use this for 'fence/wall around the yard' — never stretch a single fence to enclose an area, which fills the whole footprint.", new {
+            type = "object",
+            properties = new {
+                roomName = new { type = "string", description = "Optional target room (defaults to the most recent room)" },
+                kind = new { type = "string", description = "Barrier kind: fence (default), hedge, or railing" },
+                height = new { type = "number", description = "Optional barrier height (m)" },
+                gateWall = new { type = "string", @enum = new[] { "north", "south", "east", "west" }, description = "Optional wall to leave open for an entrance" }
+            }
         }),
         Tool("list_scene", "List the rooms and items currently in the scene.", new { type = "object", properties = new { } }),
         Tool("find_unused_areas", "Find the largest unused floor areas in a room and highlight them.", new {
@@ -356,6 +494,25 @@ public sealed class ChatEngine
         Tool("list_spaces", "List the saved spaces by name.", new { type = "object", properties = new { } })
     ];
 
-    private static ChatTool Tool(string name, string description, object schema) =>
-        ChatTool.CreateFunctionTool(name, description, BinaryData.FromObjectAsJson(schema));
+    // Reuse the existing JSON-Schema objects verbatim, reshaped into an Anthropic tool definition
+    // (properties + required lifted out of the schema; input_schema Type is auto-set to "object").
+    private static Tool Tool(string name, string description, object schema)
+    {
+        var el = JsonSerializer.SerializeToElement(schema);
+        var props = new Dictionary<string, JsonElement>();
+        if (el.TryGetProperty("properties", out var p) && p.ValueKind == JsonValueKind.Object)
+            foreach (var kv in p.EnumerateObject())
+                props[kv.Name] = kv.Value.Clone();
+        var required = new List<string>();
+        if (el.TryGetProperty("required", out var r) && r.ValueKind == JsonValueKind.Array)
+            foreach (var item in r.EnumerateArray())
+                if (item.ValueKind == JsonValueKind.String) required.Add(item.GetString()!);
+
+        return new Tool
+        {
+            Name = name,
+            Description = description,
+            InputSchema = new() { Properties = props, Required = required },
+        };
+    }
 }

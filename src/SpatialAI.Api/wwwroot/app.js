@@ -112,13 +112,17 @@ const wallGlass = new THREE.MeshStandardMaterial({ color: 0xb9c4dc, transparent:
 const wallSolid = new THREE.MeshStandardMaterial({ color: 0xe8e2d6, roughness: 0.85, side: THREE.DoubleSide });
 let renderStyle = 'glass';
 const wallMat = () => (renderStyle === 'solid' ? wallSolid : wallGlass);
+// The roof follows the same toggle: translucent in "glass" so you can see the rooms UNDER it (essential
+// for attics/imported buildings where an opaque roof would hide everything), opaque in "solid".
+const roofSolid = new THREE.MeshStandardMaterial({ color: 0x6f4636, roughness: 0.9, metalness: 0.0, side: THREE.DoubleSide });
+const roofGlass = new THREE.MeshStandardMaterial({ color: 0x9a6a52, roughness: 0.4, metalness: 0.0, side: THREE.DoubleSide, transparent: true, opacity: 0.30 });
 
 const ROOM = {
   t: 0.08,
   frame: new THREE.MeshStandardMaterial({ color: 0xd6d2cb, roughness: 0.6 }),
   glass: new THREE.MeshStandardMaterial({ color: 0x8ec5ff, transparent: true, opacity: 0.22, roughness: 0.1, metalness: 0.0, side: THREE.DoubleSide }),
   slab: new THREE.MeshStandardMaterial({ color: 0xc7c2b4, roughness: 0.9, side: THREE.DoubleSide }),
-  roof: new THREE.MeshStandardMaterial({ color: 0x6f4636, roughness: 0.9, metalness: 0.0, side: THREE.DoubleSide }),
+  get roof() { return renderStyle === 'solid' ? roofSolid : roofGlass; },
   rail: new THREE.MeshStandardMaterial({ color: 0xf97316, emissive: 0x331a06 })
 };
 
@@ -607,20 +611,237 @@ async function commitTransform() {
 }
 
 // ── Live scene stream (SSE) ────────────────────────────────────────────────
+// The stream is bound to the caller's tenant by cookie (personal id, or the room when collaborating),
+// so switching into/out of a room is just a reconnect — the server sends a fresh full baseline.
+let sceneES = null;
+let lastStreamMsgAt = 0;
+let streamWatchdog = null;
 function connectStream() {
+  if (sceneES) { try { sceneES.close(); } catch {} }
   const es = new EventSource('/api/stream?mode=patch');
+  sceneES = es;
+  lastStreamMsgAt = Date.now();
   es.onmessage = (e) => {
+    lastStreamMsgAt = Date.now();
     try {
       const msg = JSON.parse(e.data);
+      if (msg.type === 'ping') return; // heartbeat — just proves the stream is alive
       if (msg.type === 'patch') applyPatch(msg);
       else if (msg.type === 'full') applyFull(msg.scene);
       else applyFull(msg); // legacy full-scene payload (no envelope)
       scheduleAutosave(); // persist the current space if it has been saved before
-    } catch {}
+    } catch (err) {
+      console.error('[scene] failed to render update:', err, e.data);
+    }
   };
-  es.onerror = () => { es.close(); setTimeout(connectStream, 1500); };
+  es.onerror = () => { es.close(); if (sceneES === es) sceneES = null; setTimeout(connectStream, 1500); };
 }
+// The server heartbeats every 20s. If nothing arrives for 50s the socket is dead even when 'error'
+// never fires (a stale half-open connection a server restart can leave) — force a clean reconnect.
+if (!streamWatchdog) streamWatchdog = setInterval(() => {
+  if (sceneES && Date.now() - lastStreamMsgAt > 30000) {
+    try { sceneES.close(); } catch {}
+    sceneES = null;
+    connectStream();
+  }
+}, 8000);
 connectStream();
+
+// A backgrounded tab pauses requestAnimationFrame (no repaint) AND can stall EventSource — so while you
+// drive the scene from Claude Desktop, the viewer falls behind. On return to the tab, reconnect the live
+// stream AND pull the current scene immediately (don't wait on the reconnect) — so it catches up with no
+// manual refresh. Bound to both visibilitychange and window focus to cover every switch-back path.
+function refreshLiveScene() { connectStream(); rerenderScene(); }
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') refreshLiveScene(); });
+window.addEventListener('focus', refreshLiveScene);
+
+// ── Live collaboration (shared rooms + presence) ─────────────────────────────
+let inRoom = false;
+let roomCode = null;
+let myUserId = null;
+let presenceES = null;
+let presenceTimer = null;
+let myPointer = null;                 // [x, z] on the floor plane
+const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+const presenceGroup = new THREE.Group();
+scene.add(presenceGroup);
+const remotes = new Map();            // userId -> { color, cursor, cam, box, labelEl }
+const labelsEl = document.getElementById('presence-labels');
+const rosterEl = document.getElementById('room-roster');
+const roomWrapEl = document.getElementById('room-wrap');
+const shareBtn = document.getElementById('btn-share');
+const toastEl = document.getElementById('collab-toast');
+
+function showToast(html, ms) {
+  toastEl.innerHTML = html;
+  toastEl.classList.remove('collab-hidden');
+  if (ms) setTimeout(() => toastEl.classList.add('collab-hidden'), ms);
+}
+
+async function shareRoom() {
+  try {
+    const r = await (await fetch('/api/rooms', { method: 'POST' })).json();
+    if (!r.code) return;
+    try { await navigator.clipboard.writeText(r.url); } catch {}
+    enterRoom(r.code);
+    showToast(`You're collaborating — link copied. Share it: <b>${r.url}</b>`, 7000);
+  } catch {}
+}
+
+async function leaveRoom() {
+  try { await fetch('/api/rooms/leave', { method: 'POST' }); } catch {}
+  exitRoomUi();
+  switchContext();
+}
+
+function enterRoom(code) {
+  inRoom = true; roomCode = code;
+  shareBtn.classList.add('collab-hidden');
+  roomWrapEl.classList.remove('collab-hidden');
+  switchContext();            // reconnect the stream → the room's shared scene baseline
+  startPresence(code);
+}
+
+function exitRoomUi() {
+  inRoom = false; roomCode = null;
+  shareBtn.classList.remove('collab-hidden');
+  roomWrapEl.classList.add('collab-hidden');
+  stopPresence();
+  clearRemotes();
+  rosterEl.innerHTML = '';
+}
+
+// Reconnecting the SSE delivers the new tenant's full baseline; also reload chat + reset selection.
+function switchContext() {
+  selectedId = null;
+  try { transform.detach(); } catch {}
+  connectStream();
+  if (typeof loadChat === 'function') loadChat();
+  if (typeof refreshCurrentSpace === 'function') refreshCurrentSpace();
+}
+
+function startPresence(code) {
+  stopPresence();
+  presenceES = new EventSource(`/api/rooms/${code}/presence/stream`);
+  presenceES.onmessage = (e) => { try { applyPresence(JSON.parse(e.data)); } catch {} };
+  presenceES.onerror = () => { if (presenceES) presenceES.close(); };
+  presenceTimer = setInterval(sendPresence, 100);   // ~10Hz
+}
+
+function stopPresence() {
+  if (presenceES) { try { presenceES.close(); } catch {} presenceES = null; }
+  if (presenceTimer) { clearInterval(presenceTimer); presenceTimer = null; }
+}
+
+async function sendPresence() {
+  if (!inRoom || !roomCode) return;
+  try {
+    await fetch(`/api/rooms/${roomCode}/presence`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        selectedItemId: selectedId,
+        pointer: myPointer,
+        camera: [camera.position.x, camera.position.y, camera.position.z,
+                 orbit.target.x, orbit.target.y, orbit.target.z],
+      }),
+    });
+  } catch {}
+}
+
+function applyPresence(msg) {
+  if (msg.type !== 'presence') return;
+  const players = msg.players || [];
+  renderRoster(players);
+  const seen = new Set();
+  for (const p of players) {
+    if (p.userId === myUserId) continue;
+    seen.add(p.userId);
+    updateRemote(p);
+  }
+  for (const [uid, r] of remotes) if (!seen.has(uid)) { disposeRemote(r); remotes.delete(uid); }
+}
+
+function renderRoster(players) {
+  rosterEl.innerHTML = '';
+  for (const p of players) {
+    const chip = document.createElement('span');
+    chip.className = 'roster-chip';
+    chip.style.background = p.color;
+    chip.textContent = p.name + (p.userId === myUserId ? ' (you)' : '');
+    rosterEl.appendChild(chip);
+  }
+}
+
+function updateRemote(p) {
+  let r = remotes.get(p.userId);
+  if (!r) {
+    const col = new THREE.Color(p.color);
+    const cursor = new THREE.Mesh(new THREE.ConeGeometry(0.13, 0.4, 16),
+      new THREE.MeshBasicMaterial({ color: col }));
+    cursor.rotation.x = Math.PI;   // point the cone tip down at the floor
+    const cam = new THREE.Mesh(new THREE.OctahedronGeometry(0.32),
+      new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: 0.5, wireframe: true }));
+    const labelEl = document.createElement('div');
+    labelEl.className = 'presence-label';
+    labelEl.style.background = p.color;
+    labelEl.textContent = p.name;
+    labelsEl.appendChild(labelEl);
+    presenceGroup.add(cursor); presenceGroup.add(cam);
+    r = { color: col, cursor, cam, box: null, labelEl };
+    remotes.set(p.userId, r);
+  }
+  if (p.pointer) { r.cursor.visible = true; r.cursor.position.set(p.pointer[0], 0.25, p.pointer[1]); }
+  else r.cursor.visible = false;
+  if (p.camera && p.camera.length === 6) { r.cam.visible = true; r.cam.position.set(p.camera[0], p.camera[1], p.camera[2]); }
+  else r.cam.visible = false;
+  const selMesh = p.selectedItemId ? itemMeshes.get(p.selectedItemId) : null;
+  if (selMesh) {
+    if (!r.box) { r.box = new THREE.BoxHelper(selMesh, r.color); scene.add(r.box); }
+    else { r.box.setFromObject(selMesh); }
+    r.box.visible = true;
+  } else if (r.box) { r.box.visible = false; }
+}
+
+function disposeRemote(r) {
+  if (r.cursor) presenceGroup.remove(r.cursor);
+  if (r.cam) presenceGroup.remove(r.cam);
+  if (r.box) scene.remove(r.box);
+  if (r.labelEl) r.labelEl.remove();
+}
+
+function clearRemotes() {
+  for (const r of remotes.values()) disposeRemote(r);
+  remotes.clear();
+  labelsEl.innerHTML = '';
+}
+
+// Project each remote cursor's world position to a screen-space name label (called each frame).
+const _projV = new THREE.Vector3();
+function updatePresenceLabels() {
+  if (!inRoom) return;
+  for (const r of remotes.values()) {
+    if (!r.cursor.visible) { r.labelEl.style.display = 'none'; continue; }
+    _projV.copy(r.cursor.position).project(camera);
+    if (_projV.z > 1) { r.labelEl.style.display = 'none'; continue; }
+    r.labelEl.style.display = 'block';
+    r.labelEl.style.left = ((_projV.x * 0.5 + 0.5) * window.innerWidth) + 'px';
+    r.labelEl.style.top = ((-_projV.y * 0.5 + 0.5) * window.innerHeight) + 'px';
+  }
+}
+
+// Track my own pointer on the floor so others can see my cursor.
+renderer.domElement.addEventListener('mousemove', (e) => {
+  if (!inRoom) return;
+  const rect = renderer.domElement.getBoundingClientRect();
+  pointer.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+  pointer.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+  raycaster.setFromCamera(pointer, camera);
+  const hit = new THREE.Vector3();
+  if (raycaster.ray.intersectPlane(groundPlane, hit)) myPointer = [hit.x, hit.z];
+});
+
+shareBtn.addEventListener('click', shareRoom);
+document.getElementById('btn-leave').addEventListener('click', leaveRoom);
 
 // ── Toolbar ────────────────────────────────────────────────────────────────
 const modeButtons = {
@@ -800,6 +1021,7 @@ async function saveAsSpace() {
 // Autosave the current space (once it has been saved at least once), debounced.
 let autosaveTimer = null;
 function scheduleAutosave() {
+  if (inRoom) return;   // don't let N collaborators thrash-save the shared room scene
   if (!(currentSpace && currentSpace.saved)) return;
   setStatus('saving');
   clearTimeout(autosaveTimer);
@@ -820,6 +1042,61 @@ document.getElementById('sp-saveas').onclick = saveAsSpace;
 searchEl.oninput = renderGallery;
 sortEl.onchange = renderGallery;
 spacesModal.onclick = (e) => { if (e.target === spacesModal) closeSpacesModal(); };
+
+// ── Connect Claude Desktop (MCP) ─────────────────────────────────────────────
+// Signed-in users get a personal token so an MCP client (Claude Desktop) can edit THEIR space on this
+// (remote) API. We render a ready-to-paste claude_desktop_config.json with the token + this origin.
+function setupConnect(token) {
+  const btn = document.getElementById('btn-connect');
+  const modal = document.getElementById('connect-modal');
+  if (!btn || !modal) return;
+  const origin = location.origin;
+  // Prebuilt, self-contained connector per OS (served from /download/). command = the downloaded file.
+  const bins = [
+    { id: 'macos-arm64', label: 'macOS · Apple Silicon', file: 'spatialai-mcp-macos-arm64', cmd: '/Users/you/Downloads/spatialai-mcp-macos-arm64' },
+    { id: 'macos-x64',   label: 'macOS · Intel',         file: 'spatialai-mcp-macos-x64',   cmd: '/Users/you/Downloads/spatialai-mcp-macos-x64' },
+    { id: 'win-x64',     label: 'Windows',               file: 'spatialai-mcp-win-x64.exe', cmd: 'C:\\Users\\you\\Downloads\\spatialai-mcp-win-x64.exe' },
+    { id: 'linux-x64',   label: 'Linux',                 file: 'spatialai-mcp-linux-x64',   cmd: '/home/you/Downloads/spatialai-mcp-linux-x64' },
+  ];
+  const ua = (navigator.userAgent || '') + ' ' + (navigator.platform || '');
+  const pick = /Win/i.test(ua) ? 'win-x64' : /Mac/i.test(ua) ? 'macos-arm64' : /Linux|X11/i.test(ua) ? 'linux-x64' : 'macos-arm64';
+  const ordered = bins.slice().sort((a, b) => (b.id === pick) - (a.id === pick));  // detected OS first
+
+  const cfgEl = document.getElementById('cn-config');
+  const configFor = (b) => JSON.stringify({
+    mcpServers: { spatialai: { command: b.cmd, env: { SpatialApi: origin, SpatialApiKey: token } } }
+  }, null, 2);
+  let config = configFor(bins.find(b => b.id === pick));
+  cfgEl.textContent = config;
+
+  const dl = document.getElementById('cn-downloads');
+  dl.innerHTML = '';
+  ordered.forEach(b => {
+    const a = document.createElement('a');
+    a.className = 'cn-dl' + (b.id === pick ? ' rec active' : '');
+    a.href = origin + '/download/' + b.file;
+    a.setAttribute('download', '');
+    a.innerHTML = '<span>' + b.label + '</span>' + (b.id === pick ? '<span class="cn-dl-tag">detected</span>' : '');
+    a.addEventListener('click', () => {   // picking an OS also retargets the config's command path
+      config = configFor(b); cfgEl.textContent = config;
+      dl.querySelectorAll('.cn-dl').forEach(x => x.classList.remove('active'));
+      a.classList.add('active');
+    });
+    dl.appendChild(a);
+  });
+
+  btn.hidden = false;
+  const close = () => modal.classList.remove('open');
+  btn.onclick = () => modal.classList.add('open');
+  document.getElementById('cn-close').onclick = close;
+  modal.onclick = (e) => { if (e.target === modal) close(); };
+  document.getElementById('cn-copy').onclick = async () => {
+    const note = document.getElementById('cn-copied');
+    try { await navigator.clipboard.writeText(config); note.textContent = 'Copied ✓'; }
+    catch { note.textContent = 'Select the text and press Ctrl+C'; }
+    setTimeout(() => { note.textContent = ''; }, 2200);
+  };
+}
 
 // ── Reusable prompt / confirm dialog ─────────────────────────────────────────
 const dialogEl = document.getElementById('dialog');
@@ -869,6 +1146,7 @@ const impThumbs = document.getElementById('imp-thumbs');
 const impRun = document.getElementById('imp-run');
 const impStatus = document.getElementById('imp-status');
 const impResult = document.getElementById('imp-result');
+const impAttic = document.getElementById('imp-attic');
 let importFiles = [];
 
 function renderImpThumbs() {
@@ -898,12 +1176,20 @@ impRun.onclick = async () => {
   impRun.disabled = true; impStatus.textContent = 'Reading plans… (vision extraction can take a minute)'; impResult.innerHTML = '';
   const fd = new FormData();
   for (const f of importFiles) fd.append('files', f);
+  fd.append('attic', impAttic && impAttic.checked ? 'true' : 'false');
   try {
     const res = await fetch('/api/import/plans', { method: 'POST', body: fd });
+    if (!res.ok) {
+      let msg = res.status === 403 ? 'Plan import is disabled on this demo.' : 'Failed: ' + res.status;
+      if (res.status !== 403) { try { const e = await res.json(); if (e && e.error) msg = e.error; } catch {} }
+      impStatus.textContent = msg;   // only parse on success — 403 bodies are empty
+      impRun.disabled = false;
+      return;
+    }
     const data = await res.json();
-    if (!res.ok) { impStatus.textContent = 'Failed: ' + (data.error || res.status); impRun.disabled = false; return; }
     renderPlan(data.plan || data);
     impStatus.textContent = `Built ${data.roomsBuilt ?? 0} room(s). Close to view — refine with chat or drag.`;
+    if (typeof data.messagesRemaining === 'number') { messagesRemaining = data.messagesRemaining; renderStatus(); }
     importFiles = []; renderImpThumbs();
     setTimeout(closeImportModal, 1400); // reveal the reconstructed building
   } catch (err) { impStatus.textContent = 'Failed: ' + err; }
@@ -947,10 +1233,46 @@ document.getElementById('btn-ergo').onclick = async () => {
 const log = document.getElementById('log');
 const promptEl = document.getElementById('prompt');
 
+// Minimal, safe markdown for assistant replies: HTML-escape first (reusing escapeHtml above — no
+// injection), then a small subset — **bold**, *italic*, `code`, bullet/numbered lists, links, paragraphs.
+function inlineMd(s) {
+  return s
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>')
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+}
+function renderMarkdown(text) {
+  const lines = escapeHtml(text).split(/\r?\n/);
+  let html = '', list = null, para = [];
+  const closeList = () => { if (list) { html += `</${list}>`; list = null; } };
+  const flushPara = () => { if (para.length) { html += `<p>${inlineMd(para.join(' '))}</p>`; para = []; } };
+  for (const raw of lines) {
+    const line = raw.trimEnd();
+    let m;
+    if (/^\s*$/.test(line)) { flushPara(); closeList(); }
+    else if ((m = line.match(/^\s*[-*]\s+(.*)$/))) {
+      flushPara();
+      if (list !== 'ul') { closeList(); html += '<ul>'; list = 'ul'; }
+      html += `<li>${inlineMd(m[1])}</li>`;
+    } else if ((m = line.match(/^\s*\d+\.\s+(.*)$/))) {
+      flushPara();
+      if (list !== 'ol') { closeList(); html += '<ol>'; list = 'ol'; }
+      html += `<li>${inlineMd(m[1])}</li>`;
+    } else if ((m = line.match(/^\s*#{1,4}\s+(.*)$/))) {
+      flushPara(); closeList();
+      html += `<div class="md-h">${inlineMd(m[1])}</div>`;
+    } else { closeList(); para.push(line); }
+  }
+  flushPara(); closeList();
+  return html;
+}
+
 function addMessage(kind, text) {
   const div = document.createElement('div');
   div.className = `msg ${kind}`;
-  div.textContent = text;
+  if (kind === 'ai') div.innerHTML = renderMarkdown(text);
+  else div.textContent = text;   // user + tool stay plain (textContent escapes)
   log.appendChild(div);
   log.scrollTop = log.scrollHeight;
   return div;
@@ -967,6 +1289,7 @@ async function send() {
   const message = promptEl.value.trim();
   if (!message) return;
   promptEl.value = '';
+  document.getElementById('chat').classList.add('expanded');   // mobile: reveal the conversation on send
   addMessage('user', message);
   const pending = addMessage('ai', '…');
 
@@ -979,6 +1302,8 @@ async function send() {
     pending.remove();
     for (const action of data.actions || []) addMessage('tool', action);
     if (data.assistant) addMessage('ai', data.assistant);
+    if (typeof data.messagesRemaining === 'number') { messagesRemaining = data.messagesRemaining; renderStatus(); }
+    rerenderScene();   // pull the final scene + redraw — mobile SSE/rAF can stall while the keyboard is up
   } catch (err) {
     pending.textContent = 'Request failed: ' + err;
   }
@@ -990,16 +1315,69 @@ for (const chip of document.querySelectorAll('.chip')) {
   chip.onclick = () => { promptEl.value = chip.textContent; send(); };
 }
 
-// AI configured indicator
-fetch('/api/configured').then(r => r.json()).then(({ configured }) => {
-  document.getElementById('ai-dot').classList.toggle('on', configured);
-  document.getElementById('ai-text').textContent = configured ? 'Azure OpenAI ready' : 'Azure OpenAI not configured';
-});
+// Mobile: the chat is a bottom sheet — tap its header (the drag handle) to expand/collapse the log.
+(() => {
+  const chatPanel = document.getElementById('chat');
+  const h = chatPanel && chatPanel.querySelector('header');
+  if (h) h.addEventListener('click', (e) => {
+    if (e.target.closest('input, button, .chip')) return;
+    chatPanel.classList.toggle('expanded');
+  });
+})();
+
+// ── Identity gate + AI status + budget indicator ────────────────────────────
+let aiConfigured = false;
+let messagesRemaining = null;
+function renderStatus() {
+  const dot = document.getElementById('ai-dot');
+  const txt = document.getElementById('ai-text');
+  if (dot) dot.classList.toggle('on', aiConfigured);
+  if (txt) {
+    let s = aiConfigured ? 'Claude ready' : 'Claude not configured';
+    if (messagesRemaining != null) s += ` · ${messagesRemaining} msgs left`;
+    txt.textContent = s;
+  }
+}
+(async () => {
+  const roomParam = new URLSearchParams(location.search).get('room');
+  try {
+    const me = await (await fetch('/api/me')).json();
+    // In public mode, an unregistered visitor is sent to the sign-up page (preserving any room link).
+    if (me.authRequired && !me.authenticated) {
+      location.replace('/register.html' + (roomParam ? '?room=' + encodeURIComponent(roomParam) : ''));
+      return;
+    }
+    myUserId = me.userId || null;
+    if (me.importEnabled === false) {
+      const ib = document.getElementById('btn-import');
+      if (ib) ib.style.display = 'none';   // plan import is disabled on the public demo — don't offer it
+    }
+    if (me.mcpToken) setupConnect(me.mcpToken);   // signed-in: offer the "Connect Claude Desktop" panel
+    if (typeof me.messagesRemaining === 'number') messagesRemaining = me.messagesRemaining;
+  } catch { /* open/dev mode or offline — carry on */ }
+  try {
+    const { configured } = await (await fetch('/api/configured')).json();
+    aiConfigured = !!configured;
+  } catch { /* ignore */ }
+  renderStatus();
+
+  // Collaboration: join a room from a shared link, or resume an existing room cookie.
+  try {
+    if (roomParam) {
+      const r = await fetch(`/api/rooms/${encodeURIComponent(roomParam)}/join`, { method: 'POST' });
+      if (r.ok) { history.replaceState(null, '', location.pathname); enterRoom(roomParam); }
+    } else {
+      const cur = await (await fetch('/api/rooms/current')).json();
+      if (cur.inRoom) enterRoom(cur.code);
+    }
+  } catch { /* ignore */ }
+})();
 
 // ── Render loop ────────────────────────────────────────────────────────────
 function animate() {
   requestAnimationFrame(animate);
   orbit.update();
+  updatePresenceLabels();
   renderer.render(scene, camera);
 }
 animate();

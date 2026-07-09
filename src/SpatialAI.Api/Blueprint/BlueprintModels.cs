@@ -51,7 +51,9 @@ public sealed record FloorPlan(
     List<PlanStair>? Stairs,
     float ExternalWidth = 0,   // building's overall external width (m), from the outer dimension chain
     float ExternalDepth = 0,   // building's overall external depth (m)
-    bool InRoof = false,       // attic storey enclosed by the roof (no full masonry walls)
+    bool InRoof = false,       // attic storey enclosed by the roof (no full masonry walls) — set by Merge
+    bool UnderRoof = false,    // EXTRACTED: this floor sits under a SLOPED roof (attic/Dachgeschoss) — roof-slope
+                               // dashed lines, "N.N m Linie" height contours, or a DG/Dachgeschoss label
     string? EntranceRoom = null,  // ground floor: name of the room the FRONT DOOR opens into (Windfang/Eingang…)
     string? EntranceWall = null); // the exterior wall (north|south|east|west) that front door is on
 

@@ -12,125 +12,60 @@ public static class FurnitureFactory
 {
     public sealed record Built(List<Part> Parts, Vec3 Size, Rgba Primary);
 
-    private static readonly Dictionary<string, string> Aliases = new(StringComparer.OrdinalIgnoreCase)
-    {
-        ["couch"] = "sofa", ["settee"] = "sofa", ["loveseat"] = "sofa", ["armchair"] = "chair",
-        ["bookcase"] = "bookshelf", ["shelf"] = "bookshelf", ["shelves"] = "bookshelf",
-        ["coffeetable"] = "coffee_table", ["dining_table"] = "table", ["diningtable"] = "table",
-        ["sidetable"] = "nightstand", ["side_table"] = "nightstand", ["bedside"] = "nightstand",
-        ["bedside_table"] = "nightstand", ["nightstand"] = "nightstand",
-        ["dresser"] = "wardrobe", ["closet"] = "wardrobe", ["drawers"] = "wardrobe", ["chest"] = "wardrobe",
-        ["television"] = "tv", ["tv_unit"] = "tv", ["tvstand"] = "tv", ["tv_stand"] = "tv",
-        ["screen"] = "monitor", ["display"] = "monitor",
-        ["lamp"] = "floor_lamp", ["floorlamp"] = "floor_lamp", ["standing_lamp"] = "floor_lamp",
-        ["desk_lamp"] = "table_lamp", ["tablelamp"] = "table_lamp",
-        ["pottedplant"] = "plant", ["potted_plant"] = "plant", ["pot_plant"] = "plant", ["houseplant"] = "plant",
-        ["carpet"] = "rug", ["bar_stool"] = "stool", ["barstool"] = "stool",
-        // fixtures
-        ["counter"] = "kitchen_counter", ["kitchen"] = "kitchen_counter", ["countertop"] = "kitchen_counter",
-        ["island"] = "kitchen_island", ["oven"] = "stove", ["cooker"] = "stove", ["range"] = "stove",
-        ["refrigerator"] = "fridge", ["washbasin"] = "basin", ["washstand"] = "basin", ["wc"] = "toilet",
-        ["bath"] = "bathtub", ["tub"] = "bathtub", ["washer"] = "washing_machine",
-        ["washing_machine"] = "washing_machine", ["heater"] = "radiator", ["ac"] = "ac_unit",
-        ["air_conditioner"] = "ac_unit", ["stairs"] = "staircase", ["stair"] = "staircase",
-        ["pillar"] = "column", ["balustrade"] = "railing", ["banister"] = "railing",
-        ["dish"] = "plate", ["mug"] = "cup", ["notebook"] = "book", ["flowerpot"] = "vase",
-        // outdoor / site
-        ["vehicle"] = "car", ["auto"] = "car", ["automobile"] = "car",
-        ["deck"] = "terrace", ["patio"] = "terrace",
-        ["stoop"] = "steps", ["entrance_steps"] = "steps", ["stairs_outside"] = "steps", ["porch"] = "steps",
-        ["shrub"] = "bush", ["bushes"] = "bush", ["grass"] = "lawn", ["hedgerow"] = "hedge",
-    };
+    // The catalog (kinds, defaults, aliases, descriptions) is the single source of truth, loaded from
+    // CatalogSeed by default and swapped for the database-backed catalog at app startup via UseCatalog.
+    private static Catalog _catalog = CatalogSeed.Default();
 
-    // kind -> (defaultW, defaultH, defaultD, defaultPrimaryColor)
-    private static readonly Dictionary<string, (float W, float H, float D, Rgba C)> Defaults = new()
-    {
-        ["chair"]       = (0.50f, 0.90f, 0.50f, new(0.30f, 0.45f, 0.65f)),
-        ["stool"]       = (0.40f, 0.60f, 0.40f, Palette.Wood),
-        ["desk"]        = (1.40f, 0.75f, 0.70f, Palette.Wood),
-        ["table"]       = (1.20f, 0.75f, 0.80f, Palette.Wood),
-        ["coffee_table"]= (1.00f, 0.45f, 0.55f, Palette.Wood),
-        ["sofa"]        = (1.85f, 0.80f, 0.90f, new(0.42f, 0.48f, 0.55f)),
-        ["bed"]         = (1.60f, 0.95f, 2.05f, new(0.55f, 0.40f, 0.30f)),
-        ["nightstand"]  = (0.45f, 0.50f, 0.40f, Palette.Wood),
-        ["wardrobe"]    = (1.20f, 2.00f, 0.60f, Palette.Wood),
-        ["bookshelf"]   = (0.90f, 1.80f, 0.30f, Palette.Wood),
-        ["floor_lamp"]  = (0.36f, 1.60f, 0.36f, new(0.95f, 0.90f, 0.70f)),
-        ["table_lamp"]  = (0.30f, 0.50f, 0.30f, new(0.95f, 0.90f, 0.70f)),
-        ["monitor"]     = (0.60f, 0.50f, 0.18f, Palette.MetalDark),
-        ["tv"]          = (1.20f, 0.78f, 0.14f, Palette.MetalDark),
-        ["rug"]         = (2.00f, 0.03f, 1.40f, new(0.72f, 0.32f, 0.30f)),
-        ["plant"]       = (0.50f, 1.05f, 0.50f, Palette.Foliage),
-        // kitchen
-        ["kitchen_counter"] = (2.00f, 0.90f, 0.60f, Palette.Wood),
-        ["kitchen_island"]  = (1.40f, 0.90f, 0.90f, Palette.Wood),
-        ["sink"]            = (0.60f, 0.90f, 0.60f, Palette.Steel),
-        ["stove"]           = (0.60f, 0.90f, 0.60f, Palette.SteelDark),
-        ["fridge"]          = (0.70f, 1.80f, 0.70f, Palette.Steel),
-        ["dishwasher"]      = (0.60f, 0.85f, 0.60f, Palette.Steel),
-        // bathroom
-        ["toilet"]          = (0.40f, 0.78f, 0.70f, Palette.Ceramic),
-        ["bathtub"]         = (1.70f, 0.58f, 0.75f, Palette.Ceramic),
-        ["basin"]           = (0.55f, 0.85f, 0.45f, Palette.Ceramic),
-        ["shower"]          = (0.90f, 2.00f, 0.90f, Palette.Steel),
-        // heating / appliances
-        ["radiator"]        = (0.80f, 0.60f, 0.10f, Palette.White),
-        ["fireplace"]       = (1.30f, 1.15f, 0.40f, Palette.Stone),
-        ["ac_unit"]         = (0.40f, 0.70f, 0.40f, Palette.White),
-        ["washing_machine"] = (0.60f, 0.85f, 0.60f, Palette.White),
-        // structural
-        ["column"]          = (0.32f, 2.50f, 0.32f, Palette.White),
-        ["railing"]         = (1.60f, 1.00f, 0.10f, Palette.Wood),
-        ["staircase"]       = (1.00f, 2.50f, 3.00f, Palette.Wood),
-        // misc
-        ["mirror"]          = (0.60f, 1.60f, 0.05f, Palette.Wood),
-        ["bench"]           = (1.30f, 0.45f, 0.40f, Palette.Wood),
-        // tabletop
-        ["plate"]           = (0.24f, 0.04f, 0.24f, Palette.Ceramic),
-        ["cup"]             = (0.08f, 0.10f, 0.08f, new(0.90f, 0.90f, 0.92f)),
-        ["bowl"]            = (0.18f, 0.08f, 0.18f, Palette.Ceramic),
-        ["book"]            = (0.16f, 0.04f, 0.22f, new(0.50f, 0.30f, 0.30f)),
-        ["vase"]            = (0.14f, 0.30f, 0.14f, new(0.40f, 0.55f, 0.65f)),
-        ["laptop"]          = (0.33f, 0.22f, 0.23f, Palette.SteelDark),
-        // outdoor / site
-        ["tree"]            = (2.20f, 4.50f, 2.20f, Palette.Foliage),
-        ["bush"]            = (0.90f, 0.80f, 0.90f, Palette.Foliage),
-        ["hedge"]           = (2.00f, 1.00f, 0.50f, Palette.FoliageDark),
-        ["lawn"]            = (4.00f, 0.04f, 4.00f, new(0.34f, 0.52f, 0.30f)),
-        ["fence"]           = (2.00f, 1.00f, 0.10f, Palette.WoodDark),
-        ["gate"]            = (1.20f, 1.30f, 0.10f, Palette.WoodDark),
-        ["car"]             = (1.90f, 1.50f, 4.40f, new(0.16f, 0.19f, 0.24f)),
-        ["terrace"]         = (4.00f, 0.16f, 3.00f, Palette.Wood),
-        ["garage"]          = (3.20f, 2.60f, 5.60f, Palette.Stone),
-        ["steps"]           = (1.60f, 0.66f, 1.20f, Palette.Stone),
-    };
+    /// <summary>Swaps the active catalog (e.g. the database-loaded one wired at app startup).</summary>
+    public static void UseCatalog(Catalog catalog) => _catalog = catalog ?? _catalog;
 
-    public static string Normalize(string kind)
-    {
-        var k = (kind ?? "").Trim().ToLowerInvariant().Replace(' ', '_').Replace('-', '_');
-        return Aliases.TryGetValue(k, out var mapped) ? mapped : k;
-    }
+    /// <summary>The active catalog — source of truth for kinds, defaults, aliases and descriptions.</summary>
+    public static Catalog Current => _catalog;
 
-    public static bool IsKnown(string kind) => Defaults.ContainsKey(Normalize(kind));
+    /// <summary>Category-grouped kind list for the system prompt.</summary>
+    public static string DescribeKinds() => _catalog.DescribeKinds();
+
+    /// <summary>Single-line kind list for a tool's schema description.</summary>
+    public static string DescribeKindsInline() => _catalog.DescribeKindsInline();
+
+    public static string Normalize(string kind) => _catalog.Normalize(kind);
+
+    public static bool IsKnown(string kind) => _catalog.IsKnown(kind);
 
     public static Built? Build(string kind, float? width, float? height, float? depth, Rgba? color)
     {
         var k = Normalize(kind);
-        if (!Defaults.TryGetValue(k, out var def)) return null;
+        if (!_catalog.TryGet(k, out var def)) return null;
 
         float w = width ?? def.W, h = height ?? def.H, d = depth ?? def.D;
-        var primary = color ?? def.C;
+        var primary = color ?? def.Color;
         var b = new B();
 
         switch (k)
         {
-            case "chair":        Chair(b, w, h, d, primary); break;
+            case "chair":
+            case "dining_chair": Chair(b, w, h, d, primary); break;
+            case "office_chair": OfficeChair(b, w, h, d, primary); break;
+            case "armchair":     Armchair(b, w, h, d, primary); break;
             case "stool":        Stool(b, w, h, d, primary); break;
-            case "desk":
-            case "table":
-            case "coffee_table": Table(b, w, h, d, primary); break;
-            case "sofa":         Sofa(b, w, h, d, primary); break;
-            case "bed":          Bed(b, w, h, d, primary); break;
+            case "table":        Table(b, w, h, d, primary); break;
+            case "desk":         Desk(b, w, h, d, primary); break;
+            case "computer_desk":ComputerDesk(b, w, h, d, primary); break;
+            case "dining_table": DiningTable(b, w, h, d, primary); break;
+            case "coffee_table": CoffeeTable(b, w, h, d, primary); break;
+            case "sofa":
+            case "loveseat":     Sofa(b, w, h, d, primary); break;
+            case "sectional_sofa": Sectional(b, w, h, d, primary); break;
+            case "bed":
+            case "single_bed":
+            case "double_bed":
+            case "king_bed":     Bed(b, w, h, d, primary); break;
+            case "bunk_bed":     BunkBed(b, w, h, d, primary); break;
+            case "chest_of_drawers": ChestOfDrawers(b, w, h, d, primary); break;
+            case "sideboard":    Sideboard(b, w, h, d, primary); break;
+            case "desk_lamp":    DeskLamp(b, w, h, d, primary); break;
+            case "ceiling_light":CeilingLight(b, w, h, d, primary); break;
+            case "chandelier":   Chandelier(b, w, h, d, primary); break;
             case "nightstand":   Nightstand(b, w, h, d, primary); break;
             case "wardrobe":     Wardrobe(b, w, h, d, primary); break;
             case "bookshelf":    Bookshelf(b, w, h, d, primary); break;
@@ -175,6 +110,25 @@ public static class FurnitureFactory
             case "terrace":      Terrace(b, w, h, d, primary); break;
             case "garage":       Garage(b, w, h, d, primary); break;
             case "steps":        Steps(b, w, h, d, primary); break;
+            // industrial
+            case "pallet_rack":  PalletRack(b, w, h, d, primary); break;
+            case "cantilever_rack": CantileverRack(b, w, h, d, primary); break;
+            case "shelving_unit": ShelvingUnit(b, w, h, d, primary); break;
+            case "pallet":       Pallet(b, w, h, d, primary); break;
+            case "pallet_jack":  PalletJack(b, w, h, d, primary); break;
+            case "forklift":     Forklift(b, w, h, d, primary); break;
+            case "stacker":      Stacker(b, w, h, d, primary); break;
+            case "crate":        Crate(b, w, h, d, primary); break;
+            case "drum":         Drum(b, w, h, d, primary); break;
+            case "bollard":      Bollard(b, w, h, d, primary); break;
+            case "safety_barrier": SafetyBarrier(b, w, h, d, primary); break;
+            case "conveyor":     Conveyor(b, w, h, d, primary); break;
+            case "cnc_machine":  CncMachine(b, w, h, d, primary); break;
+            case "press":        Press(b, w, h, d, primary); break;
+            case "robot_arm":    RobotArm(b, w, h, d, primary); break;
+            case "workbench":    Workbench(b, w, h, d, primary); break;
+            case "control_panel":ControlPanel(b, w, h, d, primary); break;
+            case "agv":          Agv(b, w, h, d, primary); break;
             default: return null;
         }
 
@@ -317,6 +271,171 @@ public static class FurnitureFactory
         b.Sph(0, h - 0.30f, 0, w * 0.9f, 0.55f, d * 0.9f, c);                   // foliage
         b.Sph(-w * 0.2f, h - 0.45f, 0.05f, w * 0.5f, 0.35f, d * 0.5f, Palette.Darken(c, 0.12f));
         b.Sph(w * 0.2f, h - 0.12f, -0.05f, w * 0.5f, 0.35f, d * 0.5f, Palette.Lighten(c, 0.10f));
+    }
+
+    // ── Furniture variants (distinct from the generic chair/table/sofa/bed) ───
+
+    private static void Desk(B b, float w, float h, float d, Rgba c)
+    {
+        const float topT = 0.05f, legT = 0.06f;
+        b.Box(0, h - topT / 2, 0, w, topT, d, c);                                       // top
+        // left side stands on two legs; the right side is a drawer pedestal
+        b.Box(-w / 2 + legT / 2, (h - topT) / 2, -d / 2 + legT / 2, legT, h - topT, legT, Palette.Darken(c, 0.20f));
+        b.Box(-w / 2 + legT / 2, (h - topT) / 2,  d / 2 - legT / 2, legT, h - topT, legT, Palette.Darken(c, 0.20f));
+        float pedW = w * 0.28f, px = w / 2 - pedW / 2;
+        b.Box(px, (h - topT) / 2, 0, pedW, h - topT, d - 0.04f, Palette.Darken(c, 0.06f)); // pedestal
+        b.Box(px, h - 0.20f, d / 2 - 0.01f, pedW - 0.06f, 0.11f, 0.02f, Palette.Lighten(c, 0.10f)); // drawer 1
+        b.Box(px, h - 0.36f, d / 2 - 0.01f, pedW - 0.06f, 0.11f, 0.02f, Palette.Lighten(c, 0.10f)); // drawer 2
+        b.Box(px, h - 0.20f, d / 2 + 0.02f, 0.10f, 0.02f, 0.02f, Palette.MetalDark);
+        b.Box(px, h - 0.36f, d / 2 + 0.02f, 0.10f, 0.02f, 0.02f, Palette.MetalDark);
+        b.Box(-pedW / 2, h * 0.55f, -d / 2 + 0.04f, w - pedW - 0.12f, h * 0.42f, 0.03f, Palette.Darken(c, 0.05f)); // modesty panel
+    }
+
+    private static void ComputerDesk(B b, float w, float h, float d, Rgba c)
+    {
+        const float topT = 0.05f;
+        b.Box(0, h - topT / 2, 0, w, topT, d, c);                                       // top
+        b.Legs(w - 0.06f, d - 0.06f, h - topT, 0.05f, Palette.MetalDark);               // metal legs
+        b.Box(0, h * 0.60f, -d / 2 + 0.03f, w - 0.10f, h * 0.50f, 0.02f, Palette.Darken(c, 0.06f)); // back/cable panel
+        const float riserH = 0.22f;                                                     // raised monitor shelf
+        b.Box(-w * 0.28f, h + riserH / 2, -d * 0.15f, 0.05f, riserH, d * 0.40f, Palette.Darken(c, 0.12f));
+        b.Box( w * 0.28f, h + riserH / 2, -d * 0.15f, 0.05f, riserH, d * 0.40f, Palette.Darken(c, 0.12f));
+        b.Box(0, h + riserH, -d * 0.15f, w * 0.62f, 0.04f, d * 0.40f, c);
+    }
+
+    private static void DiningTable(B b, float w, float h, float d, Rgba c)
+    {
+        const float topT = 0.07f, legT = 0.10f;
+        b.Box(0, h - topT / 2, 0, w, topT, d, c);                                       // thick top
+        b.Box(0, h - topT - 0.05f, -d / 2 + 0.07f, w - 0.20f, 0.08f, 0.04f, Palette.Darken(c, 0.12f)); // apron
+        b.Box(0, h - topT - 0.05f,  d / 2 - 0.07f, w - 0.20f, 0.08f, 0.04f, Palette.Darken(c, 0.12f));
+        b.Legs(w - 0.16f, d - 0.16f, h - topT, legT, Palette.Darken(c, 0.16f));         // chunky legs
+    }
+
+    private static void CoffeeTable(B b, float w, float h, float d, Rgba c)
+    {
+        const float topT = 0.05f, legT = 0.06f;
+        b.Box(0, h - topT / 2, 0, w, topT, d, c);                                       // top
+        b.Box(0, 0.12f, 0, w - 0.12f, 0.03f, d - 0.12f, Palette.Darken(c, 0.10f));      // lower shelf
+        b.Legs(w - 0.06f, d - 0.06f, h - topT, legT, Palette.Darken(c, 0.18f));
+    }
+
+    private static void OfficeChair(B b, float w, float h, float d, Rgba c)
+    {
+        var dark = Palette.MetalDark;
+        const float seatTop = 0.48f, seatT = 0.10f;
+        b.Cyl(0, 0.05f, 0, w * 0.55f, 0.04f, d * 0.55f, dark);                          // star base (disc)
+        for (var i = 0; i < 5; i++)
+        {
+            var a = MathF.Tau * i / 5;
+            b.Cyl(MathF.Sin(a) * w * 0.40f, 0.03f, MathF.Cos(a) * d * 0.40f, 0.07f, 0.06f, 0.07f, Palette.Screen); // casters
+        }
+        b.Cyl(0, 0.27f, 0, 0.06f, 0.40f, 0.06f, Palette.Metal);                         // gas cylinder
+        b.Box(0, seatTop, 0, w * 0.70f, seatT, d * 0.70f, c);                           // seat
+        b.Box(0, seatTop + 0.32f, -d * 0.30f, w * 0.70f, 0.55f, 0.08f, c);              // backrest
+        b.Box(-w * 0.36f, seatTop + 0.12f, 0, 0.06f, 0.06f, d * 0.5f, dark);            // armrests
+        b.Box( w * 0.36f, seatTop + 0.12f, 0, 0.06f, 0.06f, d * 0.5f, dark);
+    }
+
+    private static void Armchair(B b, float w, float h, float d, Rgba c)
+    {
+        b.Box(0, 0.22f, 0, w, 0.34f, d, Palette.Darken(c, 0.16f));                      // base block
+        b.Box(0, 0.55f, -d / 2 + 0.10f, w, 0.50f, 0.18f, c);                            // backrest
+        b.Box(-w / 2 + 0.10f, 0.42f, 0, 0.18f, 0.40f, d, c);                            // arms
+        b.Box( w / 2 - 0.10f, 0.42f, 0, 0.18f, 0.40f, d, c);
+        b.Box(0, 0.44f, 0.04f, w - 0.34f, 0.14f, d - 0.30f, Palette.Lighten(c, 0.12f)); // seat cushion
+        b.Legs(w - 0.20f, d - 0.20f, 0.10f, 0.05f, Palette.WoodDark);                   // feet
+    }
+
+    private static void Sectional(B b, float w, float h, float d, Rgba c)
+    {
+        var frame = Palette.Darken(c, 0.18f);
+        float mainD = d * 0.5f, mz = -d / 2 + mainD / 2;
+        b.Box(0, 0.20f, mz, w, 0.40f, mainD, frame);                                    // main base (along X, at front)
+        b.Box(0, 0.55f, -d / 2 + 0.10f, w, 0.50f, 0.20f, c);                            // back of the main run
+        b.Box(-w / 2 + 0.10f, 0.45f, mz, 0.20f, 0.45f, mainD, c);                       // left arm
+        b.Box(0, 0.46f, mz, w - 0.40f, 0.14f, mainD - 0.20f, Palette.Lighten(c, 0.12f)); // main cushion
+        float chW = w * 0.34f, cx = w / 2 - chW / 2;                                    // chaise extension (along +Z, right end)
+        b.Box(cx, 0.20f, mainD / 2, chW, 0.40f, d - mainD, frame);
+        b.Box(w / 2 - 0.10f, 0.45f, 0, 0.20f, 0.45f, d, c);                             // right arm (full depth)
+        b.Box(cx, 0.46f, mainD / 2, chW - 0.20f, 0.14f, d - mainD - 0.10f, Palette.Lighten(c, 0.12f)); // chaise cushion
+        b.Legs(w - 0.20f, d - 0.20f, 0.10f, 0.06f, Palette.WoodDark);
+    }
+
+    private static void BunkBed(B b, float w, float h, float d, Rgba c)
+    {
+        var wood = Palette.WoodDark;
+        float lowerY = 0.45f, upperY = h - 0.30f;
+        void Bunk(float y)
+        {
+            b.Box(0, y, 0, w, 0.16f, d, wood);                                          // frame
+            b.Box(0, y + 0.12f, 0.03f, w - 0.08f, 0.12f, d - 0.10f, Palette.White);     // mattress
+            b.Box(0, y + 0.22f, -d / 2 + 0.05f, w, 0.32f, 0.06f, c);                    // headboard
+        }
+        Bunk(lowerY); Bunk(upperY);
+        foreach (var sx in new[] { -w / 2 + 0.05f, w / 2 - 0.05f })
+            foreach (var sz in new[] { -d / 2 + 0.05f, d / 2 - 0.05f })
+                b.Box(sx, h / 2, sz, 0.07f, h, 0.07f, wood);                            // corner posts
+        b.Box(0, upperY + 0.22f, d / 2 - 0.05f, w, 0.10f, 0.05f, wood);                 // upper guard rail
+        float lx = w / 2 - 0.14f;
+        b.Box(lx, h * 0.5f, d / 2 - 0.02f, 0.05f, h, 0.05f, wood);                      // ladder rail
+        for (var i = 0; i < 4; i++)
+            b.Box(lx, 0.30f + i * 0.35f, d / 2 - 0.02f, 0.34f, 0.03f, 0.05f, wood);     // rungs
+    }
+
+    private static void ChestOfDrawers(B b, float w, float h, float d, Rgba c)
+    {
+        b.Box(0, 0.08f + (h - 0.08f) / 2, 0, w, h - 0.08f, d, c);                       // body
+        const int drawers = 4;
+        float top = h - 0.04f, bottom = 0.12f, dh = (top - bottom) / drawers;
+        for (var i = 0; i < drawers; i++)
+        {
+            float cy = bottom + dh * (i + 0.5f);
+            b.Box(0, cy, d / 2 - 0.01f, w - 0.08f, dh - 0.03f, 0.02f, Palette.Lighten(c, 0.08f)); // front
+            b.Box(0, cy, d / 2 + 0.02f, 0.16f, 0.03f, 0.03f, Palette.MetalDark);                  // handle
+        }
+        b.Legs(w - 0.08f, d - 0.08f, 0.12f, 0.05f, Palette.WoodDark);
+    }
+
+    private static void Sideboard(B b, float w, float h, float d, Rgba c)
+    {
+        b.Box(0, 0.12f + (h - 0.12f) / 2, 0, w, h - 0.12f, d, c);                       // body
+        const int doors = 3;
+        float dw = (w - 0.08f) / doors;
+        for (var i = 0; i < doors; i++)
+        {
+            float cx = -w / 2 + 0.04f + dw * (i + 0.5f);
+            b.Box(cx, h * 0.55f, d / 2 - 0.01f, dw - 0.04f, h * 0.55f, 0.02f, Palette.Lighten(c, 0.08f)); // door
+            b.Box(cx + dw * 0.30f, h * 0.55f, d / 2 + 0.02f, 0.03f, 0.12f, 0.03f, Palette.MetalDark);     // handle
+        }
+        b.Legs(w - 0.10f, d - 0.08f, 0.12f, 0.05f, Palette.WoodDark);
+    }
+
+    private static void DeskLamp(B b, float w, float h, float d, Rgba c)
+    {
+        b.Cyl(0, 0.02f, 0, w * 0.6f, 0.04f, d * 0.9f, Palette.MetalDark);               // weighted base
+        b.Cyl(0, h * 0.35f, -d * 0.20f, 0.03f, h * 0.60f, 0.03f, Palette.Metal);        // lower arm
+        b.Box(0, h - 0.08f, 0.02f, 0.03f, 0.03f, d * 0.70f, Palette.Metal);             // upper arm (reaches forward)
+        b.Cyl(0, h - 0.10f, d * 0.32f, 0.12f, 0.10f, 0.12f, new Rgba(0.95f, 0.90f, 0.70f)); // head
+    }
+
+    private static void CeilingLight(B b, float w, float h, float d, Rgba c)
+    {
+        b.Cyl(0, h - 0.02f, 0, w * 0.5f, 0.04f, d * 0.5f, Palette.MetalDark);           // ceiling mount
+        b.Cyl(0, h * 0.60f, 0, 0.02f, h * 0.50f, 0.02f, Palette.MetalDark);             // cord
+        b.Cyl(0, h * 0.22f, 0, w, h * 0.40f, d, c);                                     // shade
+    }
+
+    private static void Chandelier(B b, float w, float h, float d, Rgba c)
+    {
+        b.Cyl(0, h - 0.02f, 0, 0.10f, 0.04f, 0.10f, Palette.Metal);                     // ceiling mount
+        b.Cyl(0, h * 0.60f, 0, 0.02f, h * 0.50f, 0.02f, Palette.Metal);                 // chain
+        b.Sph(0, h * 0.35f, 0, 0.14f, 0.14f, 0.14f, Palette.Metal);                     // central body
+        for (var i = 0; i < 6; i++)
+        {
+            var a = MathF.Tau * i / 6;
+            b.Sph(MathF.Sin(a) * w * 0.42f, h * 0.32f, MathF.Cos(a) * d * 0.42f, 0.07f, 0.10f, 0.07f, c); // bulbs
+        }
     }
 
     // ── Fixtures ─────────────────────────────────────────────────────────────
@@ -598,6 +717,230 @@ public static class FurnitureFactory
             float depth = d - sd * i;
             b.Box(0, top / 2f, frontZ + depth / 2f, w, top, depth, i == n - 1 ? c : Palette.Lighten(c, 0.04f));
         }
+    }
+
+    // ── Industrial — warehouse / logistics ───────────────────────────────────
+
+    private static void PalletRack(B b, float w, float h, float d, Rgba c)
+    {
+        const float postT = 0.08f;
+        foreach (var sx in new[] { -w / 2 + postT / 2, w / 2 - postT / 2 })
+            foreach (var sz in new[] { -d / 2 + postT / 2, d / 2 - postT / 2 })
+                b.Box(sx, h / 2, sz, postT, h, postT, c);                            // 4 uprights
+        var levels = Math.Max(2, (int)(h / 1.0f));
+        var beam = Palette.SafetyOrange;
+        for (var i = 1; i <= levels; i++)
+        {
+            float y = i * (h / (levels + 1));
+            b.Box(0, y, -d / 2 + postT / 2, w, 0.10f, postT, beam);                  // front/back beams
+            b.Box(0, y,  d / 2 - postT / 2, w, 0.10f, postT, beam);
+        }
+        foreach (var sx in new[] { -w / 2 + postT / 2, w / 2 - postT / 2 })          // side cross-members
+        {
+            b.Box(sx, h * 0.33f, 0, postT * 0.6f, 0.04f, d * 0.9f, c);
+            b.Box(sx, h * 0.66f, 0, postT * 0.6f, 0.04f, d * 0.9f, c);
+        }
+    }
+
+    private static void CantileverRack(B b, float w, float h, float d, Rgba c)
+    {
+        const float postT = 0.10f;
+        foreach (var sx in new[] { -w / 2 + 0.3f, w / 2 - 0.3f })
+        {
+            b.Box(sx, h / 2, 0, postT, h, postT, c);                                 // column
+            b.Box(sx, 0.06f, 0, postT * 1.4f, 0.12f, d, c);                          // base foot
+            for (var i = 1; i <= 3; i++)
+            {
+                float y = i * (h / 4f);
+                b.Box(sx, y,  d * 0.25f, postT * 0.8f, 0.08f, d * 0.5f, Palette.SafetyOrange); // arms
+                b.Box(sx, y, -d * 0.25f, postT * 0.8f, 0.08f, d * 0.5f, Palette.SafetyOrange);
+            }
+        }
+    }
+
+    private static void ShelvingUnit(B b, float w, float h, float d, Rgba c)
+    {
+        const float postT = 0.05f;
+        foreach (var sx in new[] { -w / 2 + postT / 2, w / 2 - postT / 2 })
+            foreach (var sz in new[] { -d / 2 + postT / 2, d / 2 - postT / 2 })
+                b.Box(sx, h / 2, sz, postT, h, postT, c);                            // posts
+        const int shelves = 4;
+        for (var i = 0; i <= shelves; i++)
+        {
+            float y = 0.04f + i * (h - 0.06f) / shelves;
+            b.Box(0, y, 0, w - 2 * postT, 0.03f, d - 2 * postT, Palette.Lighten(c, 0.06f));
+        }
+    }
+
+    private static void Pallet(B b, float w, float h, float d, Rgba c)
+    {
+        const int boards = 5;
+        for (var i = 0; i < boards; i++)
+            b.Box(0, h - 0.02f, -d / 2 + (i + 0.5f) * (d / boards), w, 0.025f, d / boards * 0.7f, c); // deck
+        foreach (var sx in new[] { -w / 2 + 0.08f, 0f, w / 2 - 0.08f })
+            b.Box(sx, 0.05f, 0, 0.12f, 0.10f, d, Palette.Darken(c, 0.12f));          // stringers
+    }
+
+    private static void PalletJack(B b, float w, float h, float d, Rgba c)
+    {
+        foreach (var sx in new[] { -w * 0.3f, w * 0.3f })
+            b.Box(sx, 0.08f, 0.10f, w * 0.22f, 0.10f, d * 0.8f, c);                  // forks
+        b.Box(0, 0.10f, -d / 2 + 0.12f, w, 0.14f, 0.18f, c);                         // rear cross
+        b.Box(0, h * 0.5f, -d / 2 + 0.10f, 0.06f, h, 0.06f, Palette.MetalDark);      // tiller
+        b.Box(0, h - 0.05f, -d / 2 + 0.02f, w * 0.5f, 0.06f, 0.12f, Palette.MetalDark); // grip
+        foreach (var sx in new[] { -w * 0.3f, w * 0.3f })
+            b.Cyl(sx, 0.04f, d / 2 - 0.08f, 0.10f, 0.08f, 0.10f, Palette.Screen);    // load wheels
+        b.Cyl(0, 0.05f, -d / 2 + 0.16f, 0.12f, 0.10f, 0.12f, Palette.Screen);        // steer wheel
+    }
+
+    private static void Forklift(B b, float w, float h, float d, Rgba c)
+    {
+        var dark = Palette.MetalDark;
+        b.Box(0, 0.55f, -d * 0.20f, w, 0.80f, d * 0.55f, c);                         // counterweight body
+        b.Box(0, 1.00f, -d * 0.32f, w * 0.8f, 0.50f, d * 0.30f, Palette.Darken(c, 0.10f)); // seat back
+        b.Box(0, 0.95f, -d * 0.16f, w * 0.7f, 0.12f, 0.40f, Palette.Screen);         // seat
+        foreach (var sx in new[] { -w / 2 + 0.06f, w / 2 - 0.06f })                  // overhead guard posts
+            foreach (var sz in new[] { -d * 0.05f, -d * 0.40f })
+                b.Box(sx, 1.50f, sz, 0.06f, 1.00f, 0.06f, dark);
+        b.Box(0, h - 0.05f, -d * 0.22f, w, 0.06f, d * 0.45f, dark);                  // guard roof
+        foreach (var sx in new[] { -w * 0.28f, w * 0.28f })                          // mast rails
+            b.Box(sx, h * 0.5f, d * 0.42f, 0.08f, h * 0.85f, 0.10f, dark);
+        b.Box(0, 0.30f, d * 0.46f, w * 0.6f, 0.40f, 0.06f, dark);                    // carriage
+        foreach (var sx in new[] { -w * 0.2f, w * 0.2f })
+            b.Box(sx, 0.06f, d * 0.70f, 0.12f, 0.05f, d * 0.5f, Palette.SteelDark);  // forks
+        foreach (var sx in new[] { -w / 2 + 0.06f, w / 2 - 0.06f })
+            foreach (var sz in new[] { d * 0.1f, -d * 0.35f })
+                b.Cyl(sx, 0.25f, sz, 0.50f, 0.25f, 0.50f, Palette.Screen);           // wheels
+    }
+
+    private static void Stacker(B b, float w, float h, float d, Rgba c)
+    {
+        var dark = Palette.MetalDark;
+        b.Box(0, 0.50f, -d * 0.30f, w, 1.00f, d * 0.40f, c);                         // body
+        b.Box(0, h * 0.5f, -d * 0.28f, 0.08f, h, 0.08f, dark);                       // handle column
+        foreach (var sx in new[] { -w * 0.3f, w * 0.3f })
+            b.Box(sx, h * 0.5f, d * 0.4f, 0.07f, h * 0.95f, 0.09f, dark);            // mast rails
+        foreach (var sx in new[] { -w * 0.22f, w * 0.22f })
+            b.Box(sx, 0.06f, d * 0.6f, 0.10f, 0.05f, d * 0.6f, Palette.SteelDark);   // forks
+        foreach (var sx in new[] { -w / 2 + 0.05f, w / 2 - 0.05f })
+            b.Cyl(sx, 0.08f, -d * 0.4f, 0.16f, 0.16f, 0.16f, Palette.Screen);        // wheels
+    }
+
+    private static void Crate(B b, float w, float h, float d, Rgba c)
+    {
+        b.Box(0, h / 2, 0, w - 0.06f, h - 0.06f, d - 0.06f, c);                      // body
+        var frame = Palette.Darken(c, 0.20f);
+        foreach (var sx in new[] { -w / 2 + 0.03f, w / 2 - 0.03f })
+            foreach (var sz in new[] { -d / 2 + 0.03f, d / 2 - 0.03f })
+                b.Box(sx, h / 2, sz, 0.06f, h, 0.06f, frame);                        // corner battens
+        foreach (var sy in new[] { 0.04f, h - 0.04f })
+        {
+            b.Box(0, sy, -d / 2 + 0.03f, w, 0.06f, 0.06f, frame);
+            b.Box(0, sy,  d / 2 - 0.03f, w, 0.06f, 0.06f, frame);
+        }
+    }
+
+    private static void Drum(B b, float w, float h, float d, Rgba c)
+    {
+        b.Cyl(0, h / 2, 0, w, h, d, c);                                              // body
+        b.Cyl(0, h * 0.3f, 0, w * 1.04f, 0.06f, d * 1.04f, Palette.Darken(c, 0.15f)); // rings
+        b.Cyl(0, h * 0.7f, 0, w * 1.04f, 0.06f, d * 1.04f, Palette.Darken(c, 0.15f));
+        b.Cyl(0, h - 0.02f, 0, w * 0.9f, 0.04f, d * 0.9f, Palette.MetalDark);        // lid
+    }
+
+    private static void Bollard(B b, float w, float h, float d, Rgba c)
+    {
+        b.Cyl(0, 0.03f, 0, w * 1.3f, 0.06f, d * 1.3f, Palette.MetalDark);            // base plate
+        b.Cyl(0, h / 2, 0, w, h, d, c);                                              // post
+        b.Box(0, h * 0.5f, 0, w * 1.02f, 0.12f, d * 1.02f, Palette.MetalDark);       // hazard band
+        b.Sph(0, h - 0.04f, 0, w, w, d, c);                                          // dome top
+    }
+
+    private static void SafetyBarrier(B b, float w, float h, float d, Rgba c)
+    {
+        foreach (var sx in new[] { -w / 2 + 0.05f, w / 2 - 0.05f })
+        {
+            b.Box(sx, h / 2, 0, 0.08f, h, d, c);                                     // posts
+            b.Cyl(sx, 0.04f, 0, 0.16f, 0.08f, 0.16f, Palette.MetalDark);             // feet
+        }
+        b.Box(0, h - 0.08f, 0, w, 0.10f, d * 0.7f, c);                               // top rail
+        b.Box(0, h * 0.45f, 0, w, 0.10f, d * 0.7f, c);                               // mid rail
+    }
+
+    // ── Industrial — manufacturing ───────────────────────────────────────────
+
+    private static void Conveyor(B b, float w, float h, float d, Rgba c)
+    {
+        float deckY = h - 0.10f;
+        b.Box(0, deckY, 0, w, 0.06f, d * 0.8f, Palette.Screen);                      // belt
+        b.Box(0, deckY + 0.06f, -d / 2 + 0.04f, w, 0.10f, 0.04f, c);                 // side rails
+        b.Box(0, deckY + 0.06f,  d / 2 - 0.04f, w, 0.10f, 0.04f, c);
+        foreach (var sx in new[] { -w / 2 + 0.1f, w / 2 - 0.1f })
+            foreach (var sz in new[] { -d / 2 + 0.08f, d / 2 - 0.08f })
+                b.Box(sx, deckY / 2, sz, 0.06f, deckY, 0.06f, c);                    // legs
+        foreach (var sx in new[] { -w / 2 + 0.04f, w / 2 - 0.04f })
+            b.Box(sx, deckY, 0, 0.10f, 0.10f, d * 0.78f, Palette.MetalDark);         // end rollers
+    }
+
+    private static void CncMachine(B b, float w, float h, float d, Rgba c)
+    {
+        b.Box(0, h * 0.5f, 0, w, h, d, c);                                           // enclosure
+        b.Box(0, h * 0.55f, d / 2 + 0.005f, w * 0.6f, h * 0.4f, 0.02f, Palette.Screen); // window
+        b.Box(w * 0.5f + 0.12f, h * 0.5f, d * 0.2f, 0.24f, h * 0.5f, 0.30f, Palette.SteelDark); // control box
+        b.Box(w * 0.5f + 0.12f, h * 0.55f, d * 0.2f + 0.16f, 0.18f, 0.18f, 0.02f, Palette.Screen); // HMI
+        b.Cyl(w * 0.3f, h + 0.08f, 0, 0.05f, 0.16f, 0.05f, new Rgba(0.90f, 0.20f, 0.15f)); // stack light
+        b.Cyl(w * 0.3f, h + 0.22f, 0, 0.05f, 0.12f, 0.05f, new Rgba(0.95f, 0.80f, 0.15f));
+    }
+
+    private static void Press(B b, float w, float h, float d, Rgba c)
+    {
+        b.Box(0, 0.20f, 0, w, 0.40f, d, Palette.Darken(c, 0.10f));                   // base
+        b.Box(0, h * 0.5f, -d / 2 + 0.18f, w, h, 0.36f, c);                          // back frame
+        b.Box(0, h - 0.15f, 0.05f, w * 0.9f, 0.30f, d * 0.7f, c);                    // crown
+        b.Box(0, h * 0.62f, 0.10f, w * 0.5f, 0.50f, d * 0.4f, Palette.SteelDark);    // ram
+        b.Box(0, h * 0.34f, 0.10f, w * 0.7f, 0.12f, d * 0.5f, Palette.MetalDark);    // bolster
+    }
+
+    private static void RobotArm(B b, float w, float h, float d, Rgba c)
+    {
+        var joint = Palette.MetalDark;
+        b.Cyl(0, 0.06f, 0, w * 0.9f, 0.12f, d * 0.9f, joint);                        // base
+        b.Cyl(0, 0.28f, 0, w * 0.5f, 0.40f, d * 0.5f, c);                            // rotating column
+        b.Box(0, h * 0.45f, 0.05f, w * 0.25f, h * 0.40f, d * 0.25f, c);              // lower arm
+        b.Sph(0, h * 0.62f, 0.05f, 0.18f, 0.18f, 0.18f, joint);                      // elbow
+        b.Box(0, h * 0.70f, d * 0.20f, w * 0.22f, 0.16f, d * 0.5f, c);               // upper arm
+        b.Box(0, h * 0.70f, d * 0.42f, 0.12f, 0.20f, 0.12f, joint);                  // wrist
+        b.Box(0, h * 0.62f, d * 0.50f, 0.16f, 0.08f, 0.08f, Palette.SteelDark);      // gripper
+    }
+
+    private static void Workbench(B b, float w, float h, float d, Rgba c)
+    {
+        const float topH = 0.90f;
+        b.Box(0, topH - 0.03f, 0, w, 0.06f, d, Palette.Wood);                        // worktop
+        b.Legs(w - 0.08f, d - 0.08f, topH - 0.06f, 0.07f, c);                        // legs
+        b.Box(0, 0.15f, 0, w - 0.12f, 0.03f, d - 0.10f, Palette.Darken(c, 0.10f));   // lower shelf
+        b.Box(0, topH + (h - topH) / 2, -d / 2 + 0.03f, w, h - topH, 0.03f, Palette.SteelDark); // pegboard
+    }
+
+    private static void ControlPanel(B b, float w, float h, float d, Rgba c)
+    {
+        b.Box(0, h * 0.5f, 0, w, h, d, c);                                           // cabinet
+        b.Box(0, h * 0.55f, d / 2 + 0.005f, w * 0.85f, h * 0.7f, 0.02f, Palette.Darken(c, 0.10f)); // door
+        b.Box(0, h * 0.7f, d / 2 + 0.02f, w * 0.5f, 0.28f, 0.02f, Palette.Screen);   // HMI screen
+        foreach (var bx in new[] { -w * 0.2f, 0f, w * 0.2f })
+            b.Cyl(bx, h * 0.45f, d / 2 + 0.02f, 0.05f, 0.03f, 0.05f, new Rgba(0.20f, 0.70f, 0.30f)); // buttons
+        b.Box(w * 0.3f, h * 0.30f, d / 2 + 0.02f, 0.06f, 0.12f, 0.03f, new Rgba(0.90f, 0.20f, 0.15f)); // e-stop
+    }
+
+    private static void Agv(B b, float w, float h, float d, Rgba c)
+    {
+        b.Box(0, h * 0.5f, 0, w, h * 0.8f, d, c);                                    // deck body
+        b.Box(0, h * 0.9f, 0, w * 0.8f, h * 0.2f, d * 0.8f, Palette.Darken(c, 0.10f)); // top plate
+        b.Box(0, h * 0.3f,  d / 2 + 0.02f, w, 0.08f, 0.04f, Palette.MetalDark);      // bumpers
+        b.Box(0, h * 0.3f, -d / 2 - 0.02f, w, 0.08f, 0.04f, Palette.MetalDark);
+        foreach (var sx in new[] { -w / 2 + 0.08f, w / 2 - 0.08f })
+            foreach (var sz in new[] { -d * 0.3f, d * 0.3f })
+                b.Cyl(sx, 0.06f, sz, 0.12f, 0.12f, 0.12f, Palette.Screen);           // wheels
     }
 
     /// <summary>Small mutable part collector with primitive + 4-leg helpers.</summary>
