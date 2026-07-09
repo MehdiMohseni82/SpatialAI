@@ -2,6 +2,7 @@ using System.Text.Json;
 using Anthropic;
 using Anthropic.Models.Messages;
 using SpatialAI.Api.Spaces;
+using SpatialAI.Core.Analysis;
 using SpatialAI.Core.Furniture;
 using SpatialAI.Core.Scene;
 using SpatialAI.Core.Tools;
@@ -10,7 +11,8 @@ namespace SpatialAI.Api;
 
 public sealed record ChatTurn(string Role, string Content);
 public sealed record ChatRequest(string Message, List<ChatTurn>? History);
-public sealed record ChatReply(string Assistant, List<string> Actions, int? MessagesRemaining = null, bool BudgetExhausted = false);
+public sealed record ChatReply(string Assistant, List<string> Actions, int? MessagesRemaining = null,
+    bool BudgetExhausted = false, List<string>? Suggestions = null);
 
 /// <summary>
 /// Runs the Claude (Anthropic) tool-use loop. Every tool the model can call maps to a method on
@@ -24,6 +26,8 @@ public sealed class ChatEngine
     private readonly string _model;
     private readonly BudgetStore _budget;
     private readonly List<ToolUnion> _toolDefs;
+    private readonly bool _useLlmSuggestions;
+    private readonly int _minBudgetForLlm;
     private const int MaxToolRounds = 12;   // hard loop cap (backstop for the token budget)
     private const int MaxOutputTokens = 1024;
 
@@ -99,6 +103,10 @@ public sealed class ChatEngine
         if (!string.IsNullOrWhiteSpace(apiKey))
             _client = new AnthropicClient { ApiKey = apiKey };
         _toolDefs = BuildTools().Select(t => new ToolUnion(t)).ToList();
+        // Suggestions: deterministic engine always runs; the optional LLM refinement is on by default but
+        // never spends a message credit and only fires while a user's budget is comfortably above this floor.
+        _useLlmSuggestions = !string.Equals(config["Suggestions:UseLlm"], "false", StringComparison.OrdinalIgnoreCase);
+        _minBudgetForLlm = int.TryParse(config["Suggestions:MinBudgetForLlm"], out var m) && m >= 0 ? m : 8;
     }
 
     public bool IsConfigured => _client is not null;
@@ -188,7 +196,74 @@ public sealed class ChatEngine
         if (!string.IsNullOrEmpty(text)) transcript.Add(new("ai", text));
         spaces.AppendChat(transcript);
 
-        return new ChatReply(text, actions, MessagesRemaining: remaining);
+        // Deterministic follow-up suggestions ride along with the reply (instant, free). The client may
+        // then upgrade them to LLM-refined ones via GET /api/suggestions?refine=1 — off the reply's path.
+        return new ChatReply(text, actions, MessagesRemaining: remaining,
+            Suggestions: SuggestionEngine.Suggest(store.Current));
+    }
+
+    /// <summary>
+    /// Hybrid follow-up suggestions: the deterministic <see cref="SuggestionEngine"/> is the floor; when
+    /// Claude is configured, LLM suggestions are enabled, and the user's budget is healthy, one short
+    /// (no-tools) call refines them for variety. Never consumes a message credit — only records tokens.
+    /// Any failure falls back to the deterministic list.
+    /// </summary>
+    public async Task<List<string>> SuggestAsync(SpatialAI.Core.Model.Scene scene, string userId, CancellationToken ct)
+    {
+        var baseList = SuggestionEngine.Suggest(scene);
+        if (_client is null || !_useLlmSuggestions || _budget.Remaining(userId) <= _minBudgetForLlm)
+            return baseList;
+
+        try
+        {
+            var sceneJson = scene.Rooms.Count == 0 && scene.Items.Count == 0
+                ? "(the scene is currently empty)"
+                : SceneContext.ToJson(scene);
+            var prompt =
+                "Available object kinds:\n" + FurnitureFactory.DescribeKindsInline() + "\n\n" +
+                "Current scene JSON:\n" + sceneJson + "\n\n" +
+                "Suggest exactly 3 short next commands the user could type to extend or improve THIS scene. " +
+                "Reference what already exists; don't repeat what's done. Each must be an imperative phrase of " +
+                "at most 6 words, buildable with the kinds/tools. Return ONLY a JSON array of 3 strings.";
+
+            var resp = await _client.Messages.Create(new MessageCreateParams
+            {
+                Model = _model,
+                MaxTokens = 150,
+                System = new List<TextBlockParam>
+                {
+                    new() { Text = "You propose concise next-step commands for a 3D room-design app. Reply with a JSON array of short imperative strings only." },
+                },
+                Messages = new List<MessageParam> { new() { Role = Role.User, Content = prompt } },
+            }, cancellationToken: ct);
+
+            _budget.RecordTokens(userId, resp.Usage.InputTokens, resp.Usage.OutputTokens, resp.Usage.CacheReadInputTokens ?? 0);
+
+            var text = "";
+            foreach (var block in resp.Content)
+                if (block.TryPickText(out TextBlock? t)) text += t.Text;
+
+            var parsed = ParseStringArray(text);
+            return parsed.Count > 0 ? parsed.Take(3).ToList() : baseList;
+        }
+        catch
+        {
+            return baseList;   // model error / timeout / bad JSON → deterministic floor
+        }
+    }
+
+    /// <summary>Extracts a JSON string array from model text (tolerates prose around the array).</summary>
+    private static List<string> ParseStringArray(string text)
+    {
+        var start = text.IndexOf('[');
+        var end = text.LastIndexOf(']');
+        if (start < 0 || end <= start) return [];
+        try
+        {
+            var arr = JsonSerializer.Deserialize<List<string>>(text[start..(end + 1)]);
+            return arr?.Where(s => !string.IsNullOrWhiteSpace(s)).Select(s => s.Trim()).ToList() ?? [];
+        }
+        catch { return []; }
     }
 
     private static string BuildSceneContext(SceneStore store)
