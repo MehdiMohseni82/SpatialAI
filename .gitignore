@@ -16,3 +16,5 @@ talk/
 # Secrets (never committed; user-secrets live outside the repo)
 appsettings.*.Local.json
 *.secrets.json
+.env
+!.env.example
