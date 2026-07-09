@@ -40,7 +40,16 @@
     #log { flex: 1; overflow-y: auto; padding: 10px 14px; display: flex; flex-direction: column; gap: 10px; }
     .msg { font-size: 13px; line-height: 1.45; padding: 9px 12px; border-radius: 12px; max-width: 92%; white-space: pre-wrap; }
     .msg.user { align-self: flex-end; background: rgba(129,140,248,0.18); border: 1px solid rgba(129,140,248,0.3); }
-    .msg.ai { align-self: flex-start; background: rgba(255,255,255,0.05); border: 1px solid var(--line); }
+    .msg.ai { align-self: flex-start; background: rgba(255,255,255,0.05); border: 1px solid var(--line); white-space: normal; }
+    .msg.ai p { margin: 0 0 8px; }
+    .msg.ai p:last-child { margin-bottom: 0; }
+    .msg.ai ul, .msg.ai ol { margin: 4px 0 8px; padding-left: 20px; }
+    .msg.ai li { margin: 2px 0; }
+    .msg.ai strong { color: #fff; font-weight: 700; }
+    .msg.ai code { font-family: ui-monospace, monospace; font-size: 12px; background: rgba(255,255,255,0.08);
+      padding: 1px 5px; border-radius: 5px; }
+    .msg.ai a { color: var(--accent); }
+    .msg.ai .md-h { font-weight: 700; color: #fff; margin: 4px 0; }
     .msg.tool { align-self: flex-start; font-family: ui-monospace, monospace; font-size: 11px; color: var(--muted);
       background: transparent; border: 1px dashed var(--line); padding: 6px 10px; }
     #composer { display: flex; gap: 8px; padding: 12px; border-top: 1px solid var(--line); }
@@ -114,6 +123,31 @@
     #import-modal { position: fixed; inset: 0; z-index: 50; display: none; align-items: center;
       justify-content: center; background: rgba(8,10,14,0.6); backdrop-filter: blur(4px); }
     #import-modal.open { display: flex; }
+    /* Connect Claude Desktop (MCP) modal */
+    #connect-modal { position: fixed; inset: 0; z-index: 50; display: none; align-items: center;
+      justify-content: center; background: rgba(8,10,14,0.6); backdrop-filter: blur(4px); }
+    #connect-modal.open { display: flex; }
+    #connect-modal .modal-card { width: min(680px, 92vw); }
+    .connect-body { padding: 16px 18px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
+    .connect-body p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.5; }
+    .connect-body code { background: rgba(0,0,0,0.35); border: 1px solid var(--line); border-radius: 5px;
+      padding: 1px 5px; font-size: 12px; }
+    .cn-config { margin: 0; background: #0b0e13; border: 1px solid var(--line); border-radius: 10px;
+      padding: 12px 14px; font-family: ui-monospace, "JetBrains Mono", monospace; font-size: 12px; line-height: 1.5;
+      color: #d7dbe2; white-space: pre; overflow-x: auto; max-height: 44vh; }
+    .connect-actions { display: flex; align-items: center; gap: 10px; }
+    .connect-actions .copied { color: var(--accent); font-size: 12px; font-weight: 600; }
+    .cn-note { font-size: 11.5px !important; }
+    .cn-downloads { display: flex; flex-wrap: wrap; gap: 8px; }
+    .cn-dl { display: inline-flex; align-items: center; gap: 7px; text-decoration: none; color: var(--text);
+      background: rgba(255,255,255,0.05); border: 1px solid var(--line); border-radius: 9px; padding: 8px 12px;
+      font-size: 13px; font-weight: 600; cursor: pointer; }
+    .cn-dl::before { content: "↓"; color: var(--accent); font-weight: 800; }
+    .cn-dl:hover { background: rgba(255,255,255,0.12); }
+    .cn-dl.rec { border-color: var(--accent); }
+    .cn-dl.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+    .cn-dl .cn-dl-tag { font-size: 10px; font-weight: 700; color: #08111f; background: var(--accent);
+      padding: 1px 6px; border-radius: 999px; }
     .import-body { padding: 16px 18px; overflow-y: auto; display: flex; flex-direction: column; gap: 14px; }
     .import-drop { border: 2px dashed var(--line); border-radius: 12px; padding: 30px; text-align: center;
       cursor: pointer; transition: border-color .15s, background .15s; }
@@ -161,6 +195,58 @@
     #status { position: fixed; bottom: 14px; right: 14px; z-index: 10; font-size: 12px; color: var(--muted); }
     .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #f87171; margin-right: 6px; }
     .dot.on { background: var(--accent); }
+    /* ── collaboration ── */
+    .collab-hidden { display: none !important; }
+    #btn-share.active { background: var(--accent); color: #08111f; border-color: var(--accent); }
+    #room-wrap { display: inline-flex; align-items: center; gap: 8px; margin-left: 6px; }
+    #room-roster { display: inline-flex; gap: 5px; flex-wrap: wrap; }
+    .roster-chip { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px;
+      color: #08111f; white-space: nowrap; }
+    #presence-labels { position: fixed; inset: 0; z-index: 9; pointer-events: none; overflow: hidden; }
+    .presence-label { position: absolute; transform: translate(-50%, -140%); font-size: 11px; font-weight: 700;
+      color: #08111f; padding: 1px 7px; border-radius: 999px; white-space: nowrap;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.4); }
+    #collab-toast { position: fixed; top: 64px; left: 50%; transform: translateX(-50%); z-index: 30;
+      background: var(--panel); border: 1px solid var(--accent); color: var(--text); font-size: 13px;
+      padding: 10px 16px; border-radius: 12px; box-shadow: 0 12px 40px rgba(0,0,0,0.5); max-width: 90vw; }
+    #collab-toast a, #collab-toast b { color: var(--accent); }
+
+    /* Touch: let Three.js OrbitControls own gestures (1-finger orbit, 2-finger pinch/pan). */
+    canvas, #app { touch-action: none; }
+
+    /* ── Mobile / small screens ─────────────────────────────────────────────── */
+    @media (max-width: 680px) {
+      /* Toolbar → full-width, swipeable strip pinned to the top */
+      #toolbar { top: 0; left: 0; right: 0; width: 100%; transform: none; border-radius: 0;
+        border-left: 0; border-right: 0; border-top: 0; justify-content: flex-start; padding: 7px 8px; gap: 5px;
+        overflow-x: auto; overflow-y: hidden; flex-wrap: nowrap; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+      #toolbar::-webkit-scrollbar { display: none; }
+      #toolbar > * { flex: 0 0 auto; }
+      #toolbar button, .tb-select { padding: 8px 11px; font-size: 12px; }
+      #space-name { display: none; }
+
+      /* Chat → bottom sheet: collapsed shows input + chips; tap the handle to expand the log */
+      #chat { top: auto; left: 0; right: 0; bottom: 0; width: 100%; max-height: 84vh;
+        border-radius: 16px 16px 0 0; border-bottom: 0; }
+      #chat > header { position: relative; padding: 15px 16px 6px; cursor: pointer; }
+      #chat > header::before { content: ""; position: absolute; top: 6px; left: 50%; transform: translateX(-50%);
+        width: 40px; height: 4px; border-radius: 999px; background: rgba(255,255,255,0.22); }
+      #chat > header .sub { display: none; }
+      #log { display: none; }
+      #chat.expanded #log { display: flex; max-height: 50vh; }
+      #chat.expanded > header .sub { display: block; }
+      .chips { padding: 0 12px 8px; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+      .chips::-webkit-scrollbar { display: none; }
+      .chip { flex: 0 0 auto; }
+      #composer { padding: 10px 12px calc(10px + env(safe-area-inset-bottom)); }
+      #composer input { font-size: 16px; }   /* ≥16px avoids iOS zoom-on-focus */
+
+      #hint { display: none; }
+      #status { bottom: auto; top: 54px; right: 8px; }
+
+      .modal-card { width: 94vw !important; max-height: 88vh; }
+      .gallery { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)) !important; }
+    }
   </style>
 </head>
 <body>
@@ -188,7 +274,18 @@
       <span id="space-status" class="unsaved">Unsaved</span>
       <button id="btn-spaces" title="Manage spaces">Spaces</button>
     </div>
+    <span class="sep"></span>
+    <button id="btn-share" title="Collaborate live — get a shareable link">Share</button>
+    <button id="btn-connect" title="Connect Claude Desktop over MCP" hidden>Connect</button>
+    <span id="room-wrap" class="collab-hidden">
+      <span id="room-roster" title="Who's in this room"></span>
+      <button id="btn-leave" title="Leave the shared room">Leave</button>
+    </span>
   </div>
+
+  <!-- Remote collaborators' name labels (projected onto the 3D view each frame) -->
+  <div id="presence-labels"></div>
+  <div id="collab-toast" class="collab-hidden"></div>
 
   <aside id="chat">
     <header>
@@ -245,12 +342,41 @@
           <div class="muted">or click to choose images — basement, ground, attic, elevations, section</div>
           <input id="imp-file" type="file" accept="image/*" multiple hidden>
         </div>
+        <div class="muted" style="margin:8px 2px; font-size:12px;">Tip: for a multi-storey building upload
+          <b>all floor plans + one elevation or section</b> together, so the storeys stack correctly.</div>
         <div id="imp-thumbs" class="import-thumbs"></div>
         <div class="import-actions">
+          <label style="font-size:12px; color:var(--muted); display:inline-flex; align-items:center; gap:6px; cursor:pointer;">
+            <input id="imp-attic" type="checkbox"> Top / attic floor (open to the roof, no flat ceiling)
+          </label>
           <button id="imp-run" class="primary" disabled>Reconstruct</button>
           <span id="imp-status" class="muted"></span>
         </div>
         <div id="imp-result" class="import-result"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Connect Claude Desktop (MCP) modal -->
+  <div id="connect-modal">
+    <div class="modal-card">
+      <div class="modal-head">
+        <span class="h-title">Connect Claude Desktop</span>
+        <button id="cn-close" class="x" title="Close">✕</button>
+      </div>
+      <div class="connect-body">
+        <p><b>1. Download the connector</b> for your OS — a single self-contained file, no .NET or install needed:</p>
+        <div class="cn-downloads" id="cn-downloads"></div>
+        <p><b>2. Paste this</b> into Claude Desktop → Settings → Developer → Edit Config (set <code>command</code>
+          to where you saved the file), then restart Claude Desktop:</p>
+        <pre id="cn-config" class="cn-config"></pre>
+        <div class="connect-actions">
+          <button id="cn-copy" class="primary">Copy config</button>
+          <span id="cn-copied" class="copied"></span>
+        </div>
+        <p class="cn-note">macOS/Linux: first make it runnable — <code>chmod +x &lt;file&gt;</code>; on macOS, if it's
+          blocked, right-click → Open once (or <code>xattr -d com.apple.quarantine &lt;file&gt;</code>). The token
+          authenticates as <b>you</b> — keep it private.</p>
       </div>
     </div>
   </div>
@@ -276,6 +402,6 @@
     }
   }
   </script>
-  <script type="module" src="./app.js?v=15"></script>
+  <script type="module" src="./app.js?v=28"></script>
 </body>
 </html>

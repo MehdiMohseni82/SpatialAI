@@ -1,0 +1,15 @@
+**/bin/
+**/obj/
+.git/
+.vs/
+.vscode/
+talk/
+tests/
+.playwright-mcp/
+.claude/
+**/*.db
+**/*.db-*
+src/SpatialAI.Api/spaces/
+*.png
+DEPLOY.md
+README.md

@@ -117,7 +117,8 @@ public sealed class SceneTools(SceneStore store)
         float? width = null, float? height = null, float? depth = null,
         float? colorR = null, float? colorG = null, float? colorB = null,
         float? positionX = null, float? positionZ = null, string? roomName = null,
-        float? rotationY = null, string? onItem = null, string? faceItem = null)
+        float? rotationY = null, string? onItem = null, string? faceItem = null,
+        string? anchor = null)
     {
         Rgba? color = (colorR is not null && colorG is not null && colorB is not null)
             ? new Rgba(colorR.Value, colorG.Value, colorB.Value)
@@ -129,7 +130,7 @@ public sealed class SceneTools(SceneStore store)
         {
             var room = ResolveRoom(s, roomName);
 
-            var (px, pz, py) = Place(s, room, size, positionX, positionZ, onItem);
+            var (px, pz, py) = Place(s, room, size, rotationY ?? AnchorRotation(anchor, room) ?? 0f, positionX, positionZ, anchor, onItem, ignore: null);
             var storey = StoreyRoomAt(s, px, pz, room);  // the room the item actually sits in (null = outdoors)
 
             var item = new Item
@@ -138,7 +139,7 @@ public sealed class SceneTools(SceneStore store)
                 Shape = parts.Count == 1 ? parts[0].Shape : Shape.Box,
                 Size = size,
                 Position = new Vec3(px, py, pz),  // floor, or on top of onItem's surface
-                RotationY = ResolveFacing(s, storey, catalogKind, px, pz, rotationY, faceItem),
+                RotationY = ResolveFacing(s, storey, catalogKind, px, pz, rotationY, faceItem, anchor),
                 Color = primary,
                 Parts = parts,
                 Kind = catalogKind,
@@ -155,23 +156,46 @@ public sealed class SceneTools(SceneStore store)
     }
 
     /// <summary>
-    /// Computes a placement (x, z, y) for a new item of <paramref name="size"/>: x/z from explicit
-    /// coords, else the surface center if <paramref name="onItem"/> resolves, else auto-placed; y rests
-    /// the item on that surface's top (or the floor).
+    /// Computes a placement (x, z, y) for a new item of <paramref name="size"/>. When dropping ON a
+    /// surface (<paramref name="onItem"/>) with no explicit coords/anchor, it centers on that surface;
+    /// otherwise <see cref="Placement.Resolve"/> turns the anchor/coords into an in-bounds, non-overlapping
+    /// spot. Y rests the item on that surface's top (or the storey floor).
     /// </summary>
     private static (float px, float pz, float py) Place(
-        Model.Scene s, Room? room, Vec3 size, float? posX, float? posZ, string? onItem)
+        Model.Scene s, Room? room, Vec3 size, float rotationY,
+        float? posX, float? posZ, string? anchor, string? onItem, Item? ignore)
     {
         var surface = string.IsNullOrWhiteSpace(onItem) ? null : FindItem(s, onItem);
         float px, pz;
-        if (posX is not null && posZ is not null) { px = posX.Value; pz = posZ.Value; }
-        else if (surface is not null) { px = surface.Position.X; pz = surface.Position.Z; }
-        else { var (x, z) = SuggestPlacement(s, room, size); px = x; pz = z; }
+        if (surface is not null && posX is null && posZ is null && string.IsNullOrWhiteSpace(anchor))
+            { px = surface.Position.X; pz = surface.Position.Z; }
+        else
+            (px, pz) = Placement.Resolve(s, room, size, rotationY, posX, posZ, anchor, ignore);
 
         // Rest on the target's surface, else on the storey the point falls within (its elevation), else ground.
         var storey = StoreyRoomAt(s, px, pz, room);
         var baseY = surface is not null ? surface.Position.Y + surface.Size.Y / 2f : (storey?.Elevation ?? 0f);
         return (px, pz, baseY + size.Y / 2f);
+    }
+
+    /// <summary>
+    /// The deterministic facing implied by a wall/corner <paramref name="anchor"/>, in degrees, or null
+    /// for other anchors. Walls turn the item's front into the room (back to that wall); corners are
+    /// placed unrotated here (their final north/south facing is resolved from the landed Z in
+    /// <see cref="ResolveFacing"/>). Used as BOTH the footprint rotation while placing and the final
+    /// facing, so a re-oriented item is guaranteed to stay in bounds.
+    /// </summary>
+    private static float? AnchorRotation(string? anchor, Room? room)
+    {
+        if (room is null) return null;
+        var a = (anchor ?? "").Trim().ToLowerInvariant();
+        if (a.StartsWith("corner")) return 0f;       // footprint stays axis-aligned; facing set later
+        if (a.StartsWith("wall:"))
+            return a["wall:".Length..].Trim() switch
+            {
+                "north" => 180f, "south" => 0f, "east" => -90f, "west" => 90f, _ => null
+            };
+        return null;
     }
 
     private static bool RoomContains(Room r, float x, float z)
@@ -194,7 +218,7 @@ public sealed class SceneTools(SceneStore store)
     private static readonly HashSet<string> SeatKinds = new(StringComparer.OrdinalIgnoreCase)
         { "chair", "stool", "armchair", "office_chair", "dining_chair", "bench" };
     private static readonly HashSet<string> SurfaceKinds = new(StringComparer.OrdinalIgnoreCase)
-        { "desk", "table", "dining_table", "coffee_table", "kitchen_island", "kitchen_counter" };
+        { "desk", "computer_desk", "table", "dining_table", "coffee_table", "kitchen_island", "kitchen_counter", "workbench" };
 
     /// <summary>
     /// Resolves an item's Y rotation deterministically so the model never computes facing by hand:
@@ -202,7 +226,7 @@ public sealed class SceneTools(SceneStore store)
     /// else a seat with no orientation auto-faces the nearest surface in its room; else 0 (faces +Z).
     /// </summary>
     private static float ResolveFacing(Model.Scene s, Room? room, string? kind,
-        float px, float pz, float? rotationY, string? faceItem)
+        float px, float pz, float? rotationY, string? faceItem, string? anchor = null)
     {
         // 1) Explicit target wins (deterministic, general — any item).
         var target = string.IsNullOrWhiteSpace(faceItem) ? null : FindItem(s, faceItem);
@@ -217,6 +241,13 @@ public sealed class SceneTools(SceneStore store)
                 .OrderBy(i => Dist2(px, pz, i.Position.X, i.Position.Z))
                 .FirstOrDefault();
             if (near is not null) return FaceToward(px, pz, near.Position.X, near.Position.Z);
+        }
+        // 4) Placed against a wall / into a corner → turn its front to the room (back to the wall).
+        if (room is not null && !string.IsNullOrWhiteSpace(anchor))
+        {
+            if (anchor!.Trim().StartsWith("corner", StringComparison.OrdinalIgnoreCase))
+                return pz > room.Center.Z ? 180f : 0f; // north corner faces south, and vice-versa
+            if (AnchorRotation(anchor, room) is { } ar) return ar;
         }
         return 0f;
     }
@@ -336,7 +367,7 @@ public sealed class SceneTools(SceneStore store)
     /// </summary>
     public string ComposeItem(string name, IReadOnlyList<Part> parts,
         float? positionX = null, float? positionZ = null, string? roomName = null,
-        string? onItem = null, string? faceItem = null)
+        string? onItem = null, string? faceItem = null, string? anchor = null)
     {
         if (parts is null || parts.Count == 0) return "compose_item needs at least one part.";
 
@@ -351,7 +382,7 @@ public sealed class SceneTools(SceneStore store)
         {
             var room = ResolveRoom(s, roomName);
 
-            var (px, pz, py) = Place(s, room, built.Size, positionX, positionZ, onItem);
+            var (px, pz, py) = Place(s, room, built.Size, AnchorRotation(anchor, room) ?? 0f, positionX, positionZ, anchor, onItem, ignore: null);
             var storey = StoreyRoomAt(s, px, pz, room);
 
             var item = new Item
@@ -360,7 +391,7 @@ public sealed class SceneTools(SceneStore store)
                 Shape = Shape.Box,
                 Size = built.Size,
                 Position = new Vec3(px, py, pz),
-                RotationY = ResolveFacing(s, storey, null, px, pz, null, faceItem),
+                RotationY = ResolveFacing(s, storey, null, px, pz, null, faceItem, anchor),
                 Color = primary,
                 Parts = built.Parts,
                 RoomId = storey?.Id,
@@ -376,11 +407,32 @@ public sealed class SceneTools(SceneStore store)
 
     // ── Manipulation ────────────────────────────────────────────────────────
 
-    public string MoveItem(string itemName, float positionX, float positionZ)
-        => WithItem(itemName, item =>
+    public string MoveItem(string itemName, float? positionX, float? positionZ, string? anchor = null)
+        => store.Mutate(s =>
         {
-            item.Position = item.Position with { X = positionX, Z = positionZ };
-            return $"Moved '{item.Name}' to ({positionX.ToString("F1", CI)}, {positionZ.ToString("F1", CI)}).";
+            var item = FindItem(s, itemName);
+            if (item is null) return $"No item matching '{itemName}'.";
+
+            // Place it relative to the room it belongs to (or the latest room if it had drifted outdoors).
+            var room = (item.RoomId is { } rid ? s.Rooms.FirstOrDefault(r => r.Id == rid) : null)
+                       ?? (s.Rooms.Count > 0 ? s.Rooms[^1] : null);
+            var anchorRot = AnchorRotation(anchor, room);
+            var rot = anchorRot ?? item.RotationY;
+
+            var (px, pz) = Placement.Resolve(s, room, item.Size, rot, positionX, positionZ, anchor, ignore: item);
+            var storey = StoreyRoomAt(s, px, pz, room);
+
+            item.RoomId = storey?.Id;
+            item.Level = storey?.Level ?? 0;
+            item.Position = new Vec3(px, (storey?.Elevation ?? 0f) + item.Size.Y / 2f, pz); // re-rest on the floor
+            // Re-orient wall/corner placements to face into the room (reuses the create-time logic).
+            if (storey is not null && anchor is not null && anchor.Trim().StartsWith("wall", StringComparison.OrdinalIgnoreCase))
+                item.RotationY = anchorRot ?? item.RotationY;
+            else if (storey is not null && anchor is not null && anchor.Trim().StartsWith("corner", StringComparison.OrdinalIgnoreCase))
+                item.RotationY = pz > storey.Center.Z ? 180f : 0f;
+
+            return $"Moved '{item.Name}' to ({px.ToString("F1", CI)}, {pz.ToString("F1", CI)})" +
+                   (storey != null ? $" in '{storey.Name}'." : ".");
         });
 
     public string RotateItem(string itemName, float degrees)
@@ -431,6 +483,264 @@ public sealed class SceneTools(SceneStore store)
             return $"Deleted '{item.Name}'.";
         });
 
+    // ── Groups (scene-graph: treat a line / zone as one unit) ─────────────────
+
+    public string CreateGroup(string name, string? parentName = null)
+        => store.Mutate(s =>
+        {
+            if (string.IsNullOrWhiteSpace(name)) return "A group needs a name.";
+            if (FindGroup(s, name) is not null) return $"A group named '{name}' already exists.";
+            var parent = string.IsNullOrWhiteSpace(parentName) ? null : FindGroup(s, parentName);
+            s.Groups.Add(new Group { Name = name.Trim(), ParentId = parent?.Id });
+            return $"Created group '{name.Trim()}'.";
+        });
+
+    public string AddToGroup(string groupName, IReadOnlyList<string> itemNames)
+        => store.Mutate(s =>
+        {
+            if (string.IsNullOrWhiteSpace(groupName)) return "Specify a group name.";
+            var group = FindGroup(s, groupName);
+            if (group is null) { group = new Group { Name = groupName.Trim() }; s.Groups.Add(group); }
+            var n = 0;
+            foreach (var name in itemNames ?? [])
+            {
+                var item = FindItem(s, name);
+                if (item is not null) { item.GroupId = group.Id; n++; }
+            }
+            return n == 0 ? $"No matching items to add to '{group.Name}'." : $"Added {n} item(s) to group '{group.Name}'.";
+        });
+
+    public string MoveGroup(string groupName, float? positionX, float? positionZ, string? anchor = null)
+        => store.Mutate(s =>
+        {
+            var group = FindGroup(s, groupName);
+            if (group is null) return $"No group matching '{groupName}'.";
+            var members = s.Items.Where(i => i.GroupId == group.Id).ToList();
+            if (members.Count == 0) return $"Group '{group.Name}' has no items to move.";
+
+            float minX = float.MaxValue, maxX = float.MinValue, minZ = float.MaxValue, maxZ = float.MinValue;
+            foreach (var m in members)
+            {
+                var fp = Geometry.FootprintOf(m);
+                minX = MathF.Min(minX, fp.MinX); maxX = MathF.Max(maxX, fp.MaxX);
+                minZ = MathF.Min(minZ, fp.MinZ); maxZ = MathF.Max(maxZ, fp.MaxZ);
+            }
+            float cx = (minX + maxX) / 2f, cz = (minZ + maxZ) / 2f;
+
+            float tx, tz;
+            var room = members[0].RoomId is { } rid ? s.Rooms.FirstOrDefault(r => r.Id == rid)
+                       : (s.Rooms.Count > 0 ? s.Rooms[^1] : null);
+            if (!string.IsNullOrWhiteSpace(anchor) && room is not null)
+            {
+                // Treat the whole group as one footprint so it stays inside the room.
+                var size = new Vec3(maxX - minX, 0, maxZ - minZ);
+                (tx, tz) = Placement.Resolve(s, room, size, 0f, null, null, anchor, ignore: null);
+            }
+            else { tx = positionX ?? cx; tz = positionZ ?? cz; }
+
+            float dx = tx - cx, dz = tz - cz;
+            foreach (var m in members)
+                m.Position = m.Position with { X = m.Position.X + dx, Z = m.Position.Z + dz };
+            return $"Moved group '{group.Name}' ({members.Count} item(s)).";
+        });
+
+    public string DeleteGroup(string groupName, bool deleteItems = true)
+        => store.Mutate(s =>
+        {
+            var group = FindGroup(s, groupName);
+            if (group is null) return $"No group matching '{groupName}'.";
+            var count = s.Items.Count(i => i.GroupId == group.Id);
+            if (deleteItems) s.Items.RemoveAll(i => i.GroupId == group.Id);
+            else foreach (var m in s.Items.Where(i => i.GroupId == group.Id)) m.GroupId = null;
+            s.Groups.Remove(group);
+            return deleteItems
+                ? $"Deleted group '{group.Name}' and its {count} item(s)."
+                : $"Disbanded group '{group.Name}' (kept {count} item(s)).";
+        });
+
+    // ── Layouts (build a whole system in one call; output is auto-grouped) ────
+
+    /// <summary>A large industrial shell: big tall room, flat roof, concrete floor, and dock doors.</summary>
+    public string CreateWarehouse(string name = "Warehouse", float width = 24f, float depth = 36f,
+        float height = 8f, int dockDoors = 2)
+    {
+        if (string.IsNullOrWhiteSpace(name)) name = "Warehouse";
+        width = MathF.Max(6f, width); depth = MathF.Max(6f, depth); height = MathF.Max(3f, height);
+        dockDoors = Math.Clamp(dockDoors, 0, 8);
+
+        CreateRoom(name, width, depth, 0f, 0f, height, 0, 0, ceiling: false, roof: "flat");
+        store.Mutate(s =>
+        {
+            var room = s.Rooms.LastOrDefault(r => r.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
+                       ?? s.Rooms.LastOrDefault();
+            if (room is not null) room.FloorColor = Palette.Concrete;
+            return 0;
+        });
+        for (var i = 0; i < dockDoors; i++)
+            AddDoor(name, "south", (i - (dockDoors - 1) / 2f) * (width / (dockDoors + 1)), 3.0f, 4.0f);
+
+        var doors = dockDoors > 0 ? $" with {dockDoors} dock door(s)" : "";
+        return $"Built warehouse '{name}' ({width.ToString("F0", CI)} x {depth.ToString("F0", CI)} m){doors}.";
+    }
+
+    /// <summary>A conveyor spine with one machine station per segment, all facing the belt and grouped.</summary>
+    public string CreateProductionLine(string name = "Production Line", int stations = 4,
+        string? roomName = null, string? anchor = null, float? spacing = null)
+    {
+        if (string.IsNullOrWhiteSpace(name)) name = "Production Line";
+        stations = Math.Clamp(stations, 1, 20);
+        var sp = MathF.Max(1.5f, spacing ?? 2.5f);
+        string[] machineKinds = ["cnc_machine", "robot_arm", "press", "workbench"];
+
+        return store.Mutate(s =>
+        {
+            var room = ResolveRoom(s, roomName);
+            var group = new Group { Name = name };
+            s.Groups.Add(group);
+
+            var conv = FurnitureFactory.Build("conveyor", null, null, null, null)!;
+            float lineLen = (stations - 1) * sp;
+            var footprint = new Vec3(lineLen + conv.Size.X, 0, conv.Size.Z + 3.0f);
+            var (cx, cz) = room is not null
+                ? Placement.Resolve(s, room, footprint, 0f, room.Center.X, room.Center.Z, anchor, ignore: null)
+                : (0f, 0f);
+
+            float startX = cx - lineLen / 2f;
+            float backZ = cz - (conv.Size.Z / 2f + 1.0f); // machines sit behind the belt, facing it (+Z)
+            for (var i = 0; i < stations; i++)
+            {
+                float x = startX + i * sp;
+                AddCatalogItem(s, $"Conveyor {i + 1}", "conveyor", x, cz, room, group.Id, 0f);
+                var kind = machineKinds[i % machineKinds.Length];
+                var label = char.ToUpperInvariant(kind[0]) + kind[1..].Replace('_', ' ');
+                AddCatalogItem(s, $"{label} {i + 1}", kind, x, backZ, room, group.Id, FaceToward(x, backZ, x, cz));
+            }
+            s.Highlights.Clear();
+            return $"Built a {stations}-station production line (grouped as '{name}').";
+        });
+    }
+
+    /// <summary>Rows of storage racks separated by aisles, centered in the room (or at an anchor), grouped.</summary>
+    public string CreateRackAisles(string name = "Racking", int rows = 3, int racksPerRow = 4,
+        float? aisleWidth = null, string rackKind = "pallet_rack", string? roomName = null, string? anchor = null)
+    {
+        if (string.IsNullOrWhiteSpace(name)) name = "Racking";
+        rows = Math.Clamp(rows, 1, 12);
+        racksPerRow = Math.Clamp(racksPerRow, 1, 20);
+        var aisle = MathF.Max(1.0f, aisleWidth ?? 2.8f);
+        if (!FurnitureFactory.IsKnown(rackKind)) rackKind = "pallet_rack";
+
+        return store.Mutate(s =>
+        {
+            var room = ResolveRoom(s, roomName);
+            var group = new Group { Name = name };
+            s.Groups.Add(group);
+
+            var rack = FurnitureFactory.Build(rackKind, null, null, null, null)!;
+            float colPitch = rack.Size.X + 0.1f, rowPitch = rack.Size.Z + aisle;
+            float gridW = racksPerRow * colPitch, gridD = rows * rowPitch;
+            var (cx, cz) = room is not null
+                ? Placement.Resolve(s, room, new Vec3(gridW, 0, gridD), 0f, room.Center.X, room.Center.Z, anchor, ignore: null)
+                : (0f, 0f);
+
+            float startX = cx - gridW / 2f + colPitch / 2f;
+            float startZ = cz - gridD / 2f + rowPitch / 2f;
+            var n = 0;
+            for (var r = 0; r < rows; r++)
+                for (var c = 0; c < racksPerRow; c++)
+                    AddCatalogItem(s, $"Rack {++n}", rackKind, startX + c * colPitch, startZ + r * rowPitch, room, group.Id, 0f);
+
+            s.Highlights.Clear();
+            return $"Laid out {rows} aisle(s) x {racksPerRow} = {rows * racksPerRow} racks (grouped as '{name}').";
+        });
+    }
+
+    /// <summary>
+    /// Rings a room's perimeter with a fence/wall built from FOUR thin segments (one per edge), grouped
+    /// so the whole enclosure moves/deletes as a unit. Use this for "fence/wall around the yard": a single
+    /// stretched fence would carpet the whole footprint instead of ringing it. Optionally leave one wall
+    /// open as a gateway.
+    /// </summary>
+    public string EncloseRoom(string? roomName = null, string kind = "fence",
+        float? height = null, string? gateWall = null)
+    {
+        var k = FurnitureFactory.IsKnown(kind) ? kind : "fence";
+        var gate = string.IsNullOrWhiteSpace(gateWall) ? null : NormalizeWall(gateWall);
+
+        return store.Mutate(s =>
+        {
+            var room = ResolveRoom(s, roomName);
+            if (room is null) return "No room to enclose. Create a room first.";
+
+            var group = new Group { Name = $"{room.Name} Fence" };
+            s.Groups.Add(group);
+
+            const float thickness = 0.1f;
+            float cx = room.Center.X, cz = room.Center.Z;
+            float hw = room.Width / 2f, hd = room.Depth / 2f;
+
+            // Each edge: a thin segment as long as that wall, set just inside the footprint and turned to
+            // run along the wall (N/S run along X at 0°; E/W run along Z at 90°).
+            var sides = new[]
+            {
+                (wall: "north", len: room.Width, px: cx,                       pz: cz - hd + thickness / 2f, rot: 0f),
+                (wall: "south", len: room.Width, px: cx,                       pz: cz + hd - thickness / 2f, rot: 0f),
+                (wall: "west",  len: room.Depth, px: cx - hw + thickness / 2f, pz: cz,                       rot: 90f),
+                (wall: "east",  len: room.Depth, px: cx + hw - thickness / 2f, pz: cz,                       rot: 90f),
+            };
+
+            var built = 0;
+            foreach (var side in sides)
+            {
+                if (gate is not null && side.wall == gate) continue;
+                var b = FurnitureFactory.Build(k, side.len, height, thickness, null);
+                if (b is null) continue;
+                s.Items.Add(new Item
+                {
+                    Name = $"{char.ToUpperInvariant(k[0])}{k[1..]} {char.ToUpperInvariant(side.wall[0])}{side.wall[1..]}",
+                    Shape = b.Parts.Count == 1 ? b.Parts[0].Shape : Shape.Box,
+                    Size = b.Size,
+                    Position = new Vec3(side.px, room.Elevation + b.Size.Y / 2f, side.pz),
+                    RotationY = side.rot,
+                    Color = b.Primary,
+                    Parts = b.Parts,
+                    Kind = FurnitureFactory.Normalize(k),
+                    RoomId = room.Id,
+                    Level = room.Level,
+                    GroupId = group.Id
+                });
+                built++;
+            }
+
+            s.Highlights.Clear();
+            var opening = gate is not null ? $", open on the {gate} side" : "";
+            return $"Enclosed '{room.Name}' with {built} {k} segment(s){opening} (grouped as '{group.Name}').";
+        });
+    }
+
+    /// <summary>Builds a catalog item and adds it to the scene at (px,pz), resting on the floor, in a group.</summary>
+    private static void AddCatalogItem(Model.Scene s, string name, string kind, float px, float pz,
+        Room? room, Guid groupId, float rotationY)
+    {
+        var built = FurnitureFactory.Build(kind, null, null, null, null);
+        if (built is null) return;
+        var storey = StoreyRoomAt(s, px, pz, room);
+        s.Items.Add(new Item
+        {
+            Name = name,
+            Shape = built.Parts.Count == 1 ? built.Parts[0].Shape : Shape.Box,
+            Size = built.Size,
+            Position = new Vec3(px, (storey?.Elevation ?? 0f) + built.Size.Y / 2f, pz),
+            RotationY = rotationY,
+            Color = built.Primary,
+            Parts = built.Parts,
+            Kind = FurnitureFactory.Normalize(kind),
+            RoomId = storey?.Id,
+            Level = storey?.Level ?? 0,
+            GroupId = groupId
+        });
+    }
+
     // ── Queries & analysis ──────────────────────────────────────────────────
 
     public string ListScene() => store.Read(s =>
@@ -441,12 +751,14 @@ public sealed class SceneTools(SceneStore store)
             sb.AppendLine($"Room '{room.Name}': {room.Width.ToString("F1", CI)} x {room.Depth.ToString("F1", CI)} m at ({room.Center.X.ToString("F1", CI)}, {room.Center.Z.ToString("F1", CI)}).");
         foreach (var item in s.Items)
             sb.AppendLine($"- {item.Shape} '{item.Name}' at ({item.Position.X.ToString("F1", CI)}, {item.Position.Z.ToString("F1", CI)}), size {item.Size.X.ToString("F2", CI)}x{item.Size.Y.ToString("F2", CI)}x{item.Size.Z.ToString("F2", CI)} m.");
+        foreach (var group in s.Groups)
+            sb.AppendLine($"Group '{group.Name}': {s.Items.Count(i => i.GroupId == group.Id)} item(s).");
         return sb.ToString().TrimEnd();
     });
 
     public string FindUnusedAreas(string? roomName = null) => store.Mutate(s =>
     {
-        var room = ResolveRoom(s, roomName);
+        var room = ResolveAnalysisRoom(s, roomName);
         var items = ItemsIn(s, room);
         var result = UnusedAreaAnalyzer.Analyze(room, items);
 
@@ -464,11 +776,25 @@ public sealed class SceneTools(SceneStore store)
 
     public string AnalyzeErgonomics(string? roomName = null, float? userX = null, float? userZ = null) => store.Read(s =>
     {
-        var room = ResolveRoom(s, roomName);
+        var room = ResolveAnalysisRoom(s, roomName);
         var items = ItemsIn(s, room);
         var user = new Vec3(userX ?? room?.Center.X ?? 0f, 1.6f, userZ ?? room?.Center.Z ?? 0f);
         var result = ErgonomicsAnalyzer.Analyze(items, user);
         return ErgonomicsAnalyzer.Describe(result);
+    });
+
+    /// <summary>Deletes a room by name, along with the items inside it.</summary>
+    public string DeleteRoom(string roomName) => store.Mutate(s =>
+    {
+        var room = s.Rooms.FirstOrDefault(r => string.Equals(r.Name, roomName, StringComparison.OrdinalIgnoreCase))
+                ?? s.Rooms.FirstOrDefault(r => r.Name.Contains(roomName, StringComparison.OrdinalIgnoreCase));
+        if (room is null) return $"No room matching '{roomName}'.";
+        var removed = s.Items.RemoveAll(i => i.RoomId == room.Id);
+        s.Rooms.Remove(room);
+        s.Highlights.Clear();
+        return removed > 0
+            ? $"Deleted room '{room.Name}' and {removed} item(s) inside it."
+            : $"Deleted room '{room.Name}'.";
     });
 
     // ── Helpers ─────────────────────────────────────────────────────────────
@@ -485,6 +811,18 @@ public sealed class SceneTools(SceneStore store)
         if (string.IsNullOrWhiteSpace(roomName)) return s.Rooms[^1];
         return s.Rooms.FirstOrDefault(r => r.Name.Contains(roomName, StringComparison.OrdinalIgnoreCase))
                ?? s.Rooms[^1];
+    }
+
+    // For the analysis tools (ergonomics, unused areas): with no room named, analyze the room that
+    // actually has furniture (the main workspace), not just the last room — which may be empty.
+    private static Room? ResolveAnalysisRoom(Model.Scene s, string? roomName)
+    {
+        if (s.Rooms.Count == 0) return null;
+        if (!string.IsNullOrWhiteSpace(roomName))
+            return s.Rooms.FirstOrDefault(r => r.Name.Contains(roomName, StringComparison.OrdinalIgnoreCase)) ?? s.Rooms[^1];
+        return s.Rooms.Where(r => s.Items.Any(i => i.RoomId == r.Id))
+                      .OrderByDescending(r => s.Items.Count(i => i.RoomId == r.Id))
+                      .FirstOrDefault() ?? s.Rooms[^1];
     }
 
     private string WithRoom(string? roomName, Func<Room, string> action) => store.Mutate(s =>
@@ -539,13 +877,11 @@ public sealed class SceneTools(SceneStore store)
                ?? s.Items.FirstOrDefault(i => i.Name.Contains(name, StringComparison.OrdinalIgnoreCase));
     }
 
-    private static (float x, float z) SuggestPlacement(Model.Scene s, Room? room, Vec3 size)
+    private static Group? FindGroup(Model.Scene s, string name)
     {
-        if (room is null) return (0f, 0f);
-        var result = UnusedAreaAnalyzer.Analyze(room, ItemsIn(s, room));
-        // Prefer the center of the largest region that can fit the item.
-        var region = result.Regions.FirstOrDefault(r => r.Width >= size.X && r.Depth >= size.Z);
-        if (region is not null) return (region.Center.X, region.Center.Z);
-        return (room.Center.X, room.Center.Z);
+        if (string.IsNullOrWhiteSpace(name)) return null;
+        return s.Groups.FirstOrDefault(g => string.Equals(g.Name, name, StringComparison.OrdinalIgnoreCase))
+               ?? s.Groups.FirstOrDefault(g => g.Name.Contains(name, StringComparison.OrdinalIgnoreCase));
     }
+
 }

@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SpatialAI — Sign in</title>
+  <style>
+    :root { --bg:#16181d; --panel:#1f232a; --line:rgba(255,255,255,.1); --text:#e7e5e4; --muted:#a8a29e; --orange:#fb923c; }
+    * { box-sizing: border-box; }
+    body {
+      margin:0; min-height:100vh; display:grid; place-items:center; color:var(--text);
+      font-family:"Segoe UI", system-ui, sans-serif;
+      background:
+        radial-gradient(1100px 720px at 12% -8%, rgba(251,146,60,.10), transparent 55%),
+        radial-gradient(1000px 700px at 112% 112%, rgba(234,88,12,.10), transparent 55%),
+        linear-gradient(160deg,#16181d,#101216);
+    }
+    .card { width:min(92vw,420px); background:var(--panel); border:1px solid var(--line); border-radius:18px;
+            padding:34px 30px; box-shadow:0 24px 60px rgba(0,0,0,.5); }
+    h1 { margin:0 0 6px; font-size:1.55rem; letter-spacing:-.02em; }
+    h1 .g { color:var(--orange); }
+    p.sub { margin:0 0 20px; color:var(--muted); font-size:.9rem; line-height:1.55; }
+    label { display:block; font-size:.76rem; color:var(--muted); margin:14px 0 6px; letter-spacing:.03em; text-transform:uppercase; }
+    input { width:100%; padding:12px 14px; border-radius:10px; border:1px solid var(--line);
+            background:#16181d; color:var(--text); font-size:1rem; }
+    input:focus { outline:none; border-color:var(--orange); }
+    button { width:100%; margin-top:22px; padding:12px; border:none; border-radius:10px;
+             background:var(--orange); color:#1a1207; font-weight:700; font-size:1rem; cursor:pointer; }
+    button:disabled { opacity:.55; cursor:default; }
+    .msg { margin-top:16px; font-size:.85rem; line-height:1.5; min-height:1.2em; }
+    .msg.err { color:#fca5a5; }
+    .msg.ok { color:#86efac; }
+    .chips { display:flex; gap:.4rem; flex-wrap:wrap; margin-top:18px; }
+    .chip { font-size:.66rem; padding:.35em .7em; border-radius:999px; border:1px solid var(--line); color:var(--muted); }
+    .foot { margin-top:16px; font-size:.72rem; color:var(--muted); }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Spatial<span class="g">AI</span></h1>
+    <p class="sub">Describe a room in plain language and watch it build in 3D. Enter your details to get your own private space.</p>
+    <form id="form">
+      <label for="name">Name</label>
+      <input id="name" name="name" autocomplete="name" placeholder="Ada Lovelace" required>
+      <label for="email">Email</label>
+      <input id="email" name="email" type="email" autocomplete="email" placeholder="you@example.com" required>
+      <button id="go" type="submit">Start building →</button>
+    </form>
+    <div id="msg" class="msg"></div>
+    <div class="chips"><span class="chip">.NET + Claude</span><span class="chip">MCP tools</span><span class="chip">Three.js</span></div>
+    <div class="foot">We use your email only to give you a space for this workshop.</div>
+  </div>
+  <script>
+    const params = new URLSearchParams(location.search);
+    const roomParam = params.get('room');
+    const msg = document.getElementById('msg');
+    if (params.get('error') === 'expired') {
+      msg.className = 'msg err';
+      msg.textContent = 'That link expired or was already used — please request a new one.';
+    }
+    if (roomParam) {
+      const s = document.querySelector('p.sub');
+      if (s) s.textContent = 'Sign in to join the shared session you were invited to.';
+    }
+    const form = document.getElementById('form');
+    const go = document.getElementById('go');
+    form.onsubmit = async (e) => {
+      e.preventDefault();
+      go.disabled = true; msg.className = 'msg'; msg.textContent = '';
+      try {
+        const res = await fetch('/api/auth/register', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: document.getElementById('name').value,
+            email: document.getElementById('email').value,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) { msg.className = 'msg err'; msg.textContent = data.error || 'Something went wrong.'; go.disabled = false; return; }
+        if (data.authed) { location.href = '/' + (roomParam ? '?room=' + encodeURIComponent(roomParam) : ''); return; }
+        msg.className = 'msg ok';
+        msg.textContent = 'Check your inbox — we sent a link to open your space. It expires in 30 minutes.';
+      } catch {
+        msg.className = 'msg err'; msg.textContent = 'Network error — please try again.'; go.disabled = false;
+      }
+    };
+  </script>
+</body>
+</html>

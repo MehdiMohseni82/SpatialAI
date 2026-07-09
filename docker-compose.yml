@@ -1,0 +1,38 @@
+services:
+  spatialai:
+    build: .
+    image: spatialai:latest
+    ports:
+      # Bind to localhost only — nginx (on the host) terminates TLS and reverse-proxies to this.
+      - "127.0.0.1:${HOST_PORT:-8080}:8080"
+    environment:
+      # Required — your Anthropic key (the app bills to your account with your credits).
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?set ANTHROPIC_API_KEY in .env}
+      # Public URL used to build magic-link emails (e.g. https://spatialai.yourdomain.com).
+      PublicBaseUrl: ${PUBLIC_BASE_URL:-http://localhost:8080}
+      # Budget knobs.
+      Budget__MessagesPerUser: ${MESSAGES_PER_USER:-50}
+      Budget__GlobalMessageCeiling: ${GLOBAL_CEILING:-1500}
+      # Plan import (Claude vision). Off by default; when on each import costs IMPORT_COST budget messages.
+      Import__Enabled: ${IMPORT_ENABLED:-false}
+      Import__MessageCost: ${IMPORT_COST:-5}
+      LLM__VisionModel: ${VISION_MODEL:-}
+      # Auth: set AUTH_REQUIRE_VERIFICATION=false to skip the email round-trip (still captures emails)
+      # if conference wifi / deliverability is risky on the day.
+      Auth__RequireVerification: ${AUTH_REQUIRE_VERIFICATION:-true}
+      # SMTP for magic links (leave blank + verification=false to run without email).
+      # Brevo transactional API (preferred — uses an xkeysib API key directly):
+      Email__BrevoApiKey: ${BREVO_API_KEY:-}
+      Email__From: ${EMAIL_FROM:-noreply@dotnet-talk.com}
+      Email__FromName: ${EMAIL_FROM_NAME:-SpatialAI}
+      # SMTP fallback (used only when no Brevo API key is set):
+      Email__Host: ${SMTP_HOST:-}
+      Email__Port: ${SMTP_PORT:-587}
+      Email__User: ${SMTP_USER:-}
+      Email__Pass: ${SMTP_PASS:-}
+    volumes:
+      - spatialai-data:/data
+    restart: unless-stopped
+
+volumes:
+  spatialai-data:

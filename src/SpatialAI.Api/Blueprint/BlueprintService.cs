@@ -21,7 +21,7 @@ public sealed class BlueprintService(VisionClient vision)
     public bool IsConfigured => vision.IsConfigured;
 
     // ── Orchestration ────────────────────────────────────────────────────────
-    public async Task<BuildingPlan> BuildAsync(IReadOnlyList<VisionClient.Image> images, CancellationToken ct)
+    public async Task<BuildingPlan> BuildAsync(IReadOnlyList<VisionClient.Image> images, bool atticHint, CancellationToken ct)
     {
         var classes = await ClassifyAsync(images, ct);
 
@@ -54,7 +54,7 @@ public sealed class BlueprintService(VisionClient vision)
         var elev = elevationTask.Result;
         var (footW, footD) = footprintTask.Result;
 
-        return Merge(floors, elev, footW, footD);
+        return Merge(floors, elev, footW, footD, atticHint);
     }
 
     // ── Dedicated footprint read ─────────────────────────────────────────────
@@ -106,7 +106,7 @@ public sealed class BlueprintService(VisionClient vision)
 
             Reply as JSON:
             {"level":int,"name":string,"height":number,"externalWidth":number,"externalDepth":number,
-             "entranceRoom":string,"entranceWall":"north|south|east|west",
+             "underRoof":bool,"entranceRoom":string,"entranceWall":"north|south|east|west",
              "rooms":[{"name":string,"centerX":number,"centerZ":number,"width":number,"depth":number,
                "openings":[{"wall":"north|south|east|west","type":"window|door","offset":number,"width":number,"height":number}],
                "furniture":[{"kind":string,"x":number,"z":number,"rotationY":number,"width":number,"depth":number}]}],
@@ -132,6 +132,12 @@ public sealed class BlueprintService(VisionClient vision)
             - ENTRANCE (ground floor only): find the MAIN front-door entry — the door from outside into the
               entrance hall (Windfang / Eingang / Diele / Vorzimmer). Report `entranceRoom` = that room's name
               and `entranceWall` = the exterior wall it sits on. Leave both empty on other floors.
+            - ATTIC / UNDER-ROOF: set `underRoof` = true when this floor sits under a SLOPED roof (a
+              Dachgeschoss/DG or top storey). Tell-tale signs: diagonal dashed lines crossing the rooms
+              (the roof slope), printed height-contour marks like "1.0 m Linie / 1.5 m / 2.0 m / 2.3 m"
+              (where the sloping ceiling reaches that height), knee-wall hatching along the outer edges, or
+              a "Dachgeschoss/DG/Spitzboden" label. Such a floor is OPEN TO THE ROOF — it has NO flat
+              ceiling. Set false for a normal full-height storey (Erdgeschoss/Obergeschoss with straight walls).
             - "height" = storey wall height in meters (typical 2.5–2.8; use 2.5 if unreadable).
             - furniture.kind MUST be one of: bed, sofa, chair, table, desk, wardrobe, bookshelf, nightstand,
               kitchen_counter, kitchen_island, sink, stove, fridge, dishwasher, toilet, bathtub, basin, shower,
@@ -177,7 +183,7 @@ public sealed class BlueprintService(VisionClient vision)
     }
 
     // ── 4. Merge + stack storeys ─────────────────────────────────────────────
-    private static BuildingPlan Merge(List<FloorPlan> floors, ElevationResult? elev, float footW, float footD)
+    private static BuildingPlan Merge(List<FloorPlan> floors, ElevationResult? elev, float footW, float footD, bool atticHint = false)
     {
         var ordered = floors.OrderBy(f => f.Level).ToList();
 
@@ -207,19 +213,32 @@ public sealed class BlueprintService(VisionClient vision)
         string roofStyle = elev is null || string.IsNullOrWhiteSpace(elev.RoofStyle) ? "gable" : elev.RoofStyle.ToLowerInvariant();
         bool pitched = roofStyle is "mansard" or "gable" or "hip";
 
-        float eave = elev is not null && Sane(elev.Eave, 2f, 12f) ? elev.Eave : 4.0f;
+        // The top above-grade storey under a pitched roof is the ATTIC. Normally that needs ≥2 storeys, but the
+        // extractor can also flag a floor as under a sloped roof (a lone Dachgeschoss plan) — honour that too.
+        // Attic when: the user ticked the "attic" box, the extractor flagged a roofed floor, or (top of a
+        // multi-storey stack) the classic ≥2-storey rule below.
+        bool extractedAttic = atticHint || locked.Any(f => f.UnderRoof && f.Level >= 0);
+        int? atticLevel = pitched && aboveGrade.Count > 0 && (aboveGrade.Count >= 2 || extractedAttic)
+            ? aboveGrade[^1] : null;
+        var masonryAbove = aboveGrade.Where(l => l != atticLevel).ToList();
+        int nMason = Math.Max(1, masonryAbove.Count);
+        // A lone attic (no full storey below it) sits ON THE GROUND with a low knee wall — the roof springs
+        // just above the floor rather than atop a full storey.
+        bool atticOnGround = atticLevel is not null && masonryAbove.Count == 0;
+
+        float eave = atticOnGround ? 0.8f
+            : elev is not null && Sane(elev.Eave, 2f, 12f) ? elev.Eave : 4.0f;
         float ridge = elev is not null && Sane(elev.Ridge, eave + 0.5f, 20f) ? elev.Ridge : eave + span * 0.45f;
         float brk = elev is not null && Sane(elev.MansardBreak, eave + 0.3f, ridge - 0.3f) ? elev.MansardBreak : eave + (ridge - eave) * 0.6f;
         float basementFloor = elev is not null && Sane(elev.BasementFloor, -8f, -0.5f) ? elev.BasementFloor : -2.4f;
 
-        // The top above-grade storey under a pitched roof is the ATTIC, living inside the roof (floor at eave).
-        int? atticLevel = pitched && aboveGrade.Count >= 2 ? aboveGrade[^1] : null;
-        var masonryAbove = aboveGrade.Where(l => l != atticLevel).ToList();
-        int nMason = MathF.Max(1, masonryAbove.Count) is var nm ? (int)nm : 1;
-
         (float elevation, float height, bool inRoof) Profile(int level)
         {
-            if (level == atticLevel) return (eave, MathF.Max(0.6f, ridge - eave), true);
+            if (level == atticLevel)
+            {
+                float floorE = atticOnGround ? 0f : eave;   // lone attic on the ground vs. attic atop masonry
+                return (floorE, MathF.Max(0.6f, ridge - floorE), true);
+            }
             if (level >= 0)
             {
                 float h = eave / nMason;
