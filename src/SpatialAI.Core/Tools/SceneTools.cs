@@ -139,7 +139,9 @@ public sealed class SceneTools(SceneStore store)
                 Shape = parts.Count == 1 ? parts[0].Shape : Shape.Box,
                 Size = size,
                 Position = new Vec3(px, py, pz),  // floor, or on top of onItem's surface
-                RotationY = ResolveFacing(s, storey, catalogKind, px, pz, rotationY, faceItem, anchor),
+                RotationY = ResolveFacing(s, storey, catalogKind, px, pz, rotationY, faceItem, anchor, onItem),
+                // Facing is "auto" (re-faceable later) only when the caller gave no explicit orientation.
+                AutoFacing = faceItem is null && rotationY is null && string.IsNullOrWhiteSpace(anchor),
                 Color = primary,
                 Parts = parts,
                 Kind = catalogKind,
@@ -147,6 +149,9 @@ public sealed class SceneTools(SceneStore store)
                 Level = storey?.Level ?? 0
             };
             s.Items.Add(item);
+            // A new surface (desk/table) re-faces any auto-faced seats near it, so a chair added before its
+            // desk still turns to face it (facing is otherwise resolved once, at creation).
+            if (catalogKind is not null && SurfaceKinds.Contains(catalogKind)) RefaceAutoSeats(s, storey);
             s.Highlights.Clear();
             return $"Created {label} '{item.Name}' " +
                    $"({size.X.ToString("F2", CI)} x {size.Y.ToString("F2", CI)} x {size.Z.ToString("F2", CI)} m) " +
@@ -226,7 +231,7 @@ public sealed class SceneTools(SceneStore store)
     /// else a seat with no orientation auto-faces the nearest surface in its room; else 0 (faces +Z).
     /// </summary>
     private static float ResolveFacing(Model.Scene s, Room? room, string? kind,
-        float px, float pz, float? rotationY, string? faceItem, string? anchor = null)
+        float px, float pz, float? rotationY, string? faceItem, string? anchor = null, string? onItem = null)
     {
         // 1) Explicit target wins (deterministic, general — any item).
         var target = string.IsNullOrWhiteSpace(faceItem) ? null : FindItem(s, faceItem);
@@ -242,6 +247,10 @@ public sealed class SceneTools(SceneStore store)
                 .FirstOrDefault();
             if (near is not null) return FaceToward(px, pz, near.Position.X, near.Position.Z);
         }
+        // 3.5) A non-seat item resting ON a surface inherits that surface's facing (a monitor turns with
+        //      its desk instead of pointing at world +Z when the desk is rotated).
+        if (!string.IsNullOrWhiteSpace(onItem) && FindItem(s, onItem) is { } surface)
+            return surface.RotationY;
         // 4) Placed against a wall / into a corner → turn its front to the room (back to the wall).
         if (room is not null && !string.IsNullOrWhiteSpace(anchor))
         {
@@ -254,6 +263,22 @@ public sealed class SceneTools(SceneStore store)
 
     private static float Dist2(float ax, float az, float bx, float bz)
         => (ax - bx) * (ax - bx) + (az - bz) * (az - bz);
+
+    /// <summary>
+    /// Re-faces every auto-faced seat in <paramref name="room"/> toward its nearest surface. Called when a
+    /// surface is added or moved, so a seat that was created before its desk (and locked to a default
+    /// facing) turns to face it. Seats with an explicit facing (<see cref="Item.AutoFacing"/> false) are left alone.
+    /// </summary>
+    private static void RefaceAutoSeats(Model.Scene s, Room? room)
+    {
+        var surfaces = ItemsIn(s, room).Where(i => SurfaceKinds.Contains(i.Kind ?? "")).ToList();
+        if (surfaces.Count == 0) return;
+        foreach (var seat in ItemsIn(s, room).Where(i => i.AutoFacing && SeatKinds.Contains(i.Kind ?? "")))
+        {
+            var near = surfaces.OrderBy(i => Dist2(seat.Position.X, seat.Position.Z, i.Position.X, i.Position.Z)).First();
+            seat.RotationY = FaceToward(seat.Position.X, seat.Position.Z, near.Position.X, near.Position.Z);
+        }
+    }
 
     /// <summary>
     /// Places <paramref name="count"/> items of <paramref name="kind"/> on top of a target's surface,
@@ -430,6 +455,9 @@ public sealed class SceneTools(SceneStore store)
                 item.RotationY = anchorRot ?? item.RotationY;
             else if (storey is not null && anchor is not null && anchor.Trim().StartsWith("corner", StringComparison.OrdinalIgnoreCase))
                 item.RotationY = pz > storey.Center.Z ? 180f : 0f;
+
+            // Moving a surface re-faces the auto-faced seats that point at it.
+            if (item.Kind is not null && SurfaceKinds.Contains(item.Kind)) RefaceAutoSeats(s, storey);
 
             return $"Moved '{item.Name}' to ({px.ToString("F1", CI)}, {pz.ToString("F1", CI)})" +
                    (storey != null ? $" in '{storey.Name}'." : ".");
