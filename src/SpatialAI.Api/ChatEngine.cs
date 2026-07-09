@@ -214,6 +214,11 @@ public sealed class ChatEngine
         if (_client is null || !_useLlmSuggestions || _budget.Remaining(userId) <= _minBudgetForLlm)
             return baseList;
 
+        // On an empty scene the deterministic openers ("create a room …") are exactly right — don't let
+        // the LLM refine them into "add a sofa" before any room exists (you must create a room first).
+        if (scene.Rooms.Count == 0 && scene.Items.Count == 0)
+            return baseList;
+
         try
         {
             var sceneJson = scene.Rooms.Count == 0 && scene.Items.Count == 0
