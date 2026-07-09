@@ -10,6 +10,7 @@ using SpatialAI.Api.Collab;
 using SpatialAI.Api.Email;
 using SpatialAI.Api.Spaces;
 using SpatialAI.Api.Tenancy;
+using SpatialAI.Core.Analysis;
 using SpatialAI.Core.Furniture;
 using SpatialAI.Core.Model;
 using SpatialAI.Core.Scene;
@@ -227,6 +228,20 @@ app.MapPost("/api/chat", async (HttpContext http, ChatRequest req, ChatEngine en
 });
 
 app.MapGet("/api/chat/history", (SpaceManager spaces) => Results.Ok(spaces.CurrentChat()));
+
+// Context-aware follow-up suggestions for the current (tenant) scene. Deterministic by default;
+// `?refine=1` runs the hybrid path (LLM refinement when configured + budget healthy).
+app.MapGet("/api/suggestions", async (HttpContext http, string? refine, SceneStore store, ChatEngine engine,
+    CancellationToken ct) =>
+{
+    var scene = store.Current;
+    if (refine is "1" or "true")
+    {
+        var uid = (string)http.Items["uid"]!;
+        return Results.Ok(new { suggestions = await engine.SuggestAsync(scene, uid, ct) });
+    }
+    return Results.Ok(new { suggestions = SuggestionEngine.Suggest(scene) });
+});
 
 // ── Blueprint import: plan images → structured BuildingPlan → live 3D reconstruction ──
 app.MapPost("/api/import/plans", async (HttpRequest req, BlueprintService blueprint,
