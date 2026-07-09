@@ -81,6 +81,18 @@ public sealed class AuthRepository
     {
         if (cost < 1) cost = 1;
         using var c = Open();
+        // Open/dev mode issues an anonymous per-browser uid that has no account row yet; without one the
+        // guarded UPDATE below matches zero rows and every message reads as "over budget". Create a
+        // zero-usage row on first use so anonymous users get their normal per-user allowance. Registered
+        // accounts already have a row, so INSERT OR IGNORE is a no-op for them.
+        using var ins = c.CreateCommand();
+        ins.CommandText = "INSERT OR IGNORE INTO users (id, email, name, created_at, used_messages) " +
+                          "VALUES ($id, $email, 'Guest', $now, 0)";
+        ins.Parameters.AddWithValue("$id", userId);
+        ins.Parameters.AddWithValue("$email", "anon:" + userId);
+        ins.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("o"));
+        ins.ExecuteNonQuery();
+
         using var upd = c.CreateCommand();
         upd.CommandText = "UPDATE users SET used_messages = used_messages + $cost " +
                           "WHERE id=$id AND used_messages + $cost <= $cap";
