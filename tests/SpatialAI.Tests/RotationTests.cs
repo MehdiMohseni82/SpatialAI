@@ -134,4 +134,51 @@ public class RotationTests
 
         store.Current.Items.Single(i => i.Name == "Plant").RotationY.Should().BeApproximately(0f, 0.01f);
     }
+
+    [Fact]
+    public void SeatCreatedBeforeSurface_IsRefacedWhenTheSurfaceIsAdded()
+    {
+        var (store, tools) = New();
+        tools.CreateRoom("Office", 6, 5);
+
+        // Chair added FIRST, with no desk yet → it locks to the default facing (0°).
+        tools.CreateItem("Chair", "chair", positionX: 1.5f, positionZ: 0);
+        store.Current.Items.Single(i => i.Name == "Chair").RotationY.Should().BeApproximately(0f, 0.01f);
+
+        // Adding the desk should re-face the (auto-faced) chair toward it — the core orientation fix.
+        tools.CreateItem("Desk", "desk", positionX: 0, positionZ: 0);
+
+        var chair = store.Current.Items.Single(i => i.Name == "Chair");
+        var desk = store.Current.Items.Single(i => i.Name == "Desk");
+        var expected = SceneTools.FaceToward(chair.Position.X, chair.Position.Z, desk.Position.X, desk.Position.Z);
+        chair.RotationY.Should().BeApproximately(expected, 0.5f);
+        chair.RotationY.Should().NotBe(0f);   // proves it was actually re-faced
+    }
+
+    [Fact]
+    public void ItemPlacedOnASurface_InheritsTheSurfaceRotation()
+    {
+        var (store, tools) = New();
+        tools.CreateRoom("Office", 6, 5);
+        tools.CreateItem("Desk", "desk", positionX: 0, positionZ: 0, rotationY: 45f);
+
+        tools.CreateItem("Monitor", "monitor", onItem: "Desk");
+
+        var desk = store.Current.Items.Single(i => i.Name == "Desk");
+        var monitor = store.Current.Items.Single(i => i.Name == "Monitor");
+        monitor.RotationY.Should().BeApproximately(desk.RotationY, 0.01f);
+    }
+
+    [Fact]
+    public void ExplicitlyOrientedSeat_IsNotRefacedByALaterSurface()
+    {
+        var (store, tools) = New();
+        tools.CreateRoom("Office", 6, 5);
+        tools.CreateItem("Chair", "chair", positionX: 1.5f, positionZ: 0, rotationY: 30f);
+
+        tools.CreateItem("Desk", "desk", positionX: 0, positionZ: 0);
+
+        // The chair had an explicit rotationY (AutoFacing == false) → the surface must not turn it.
+        store.Current.Items.Single(i => i.Name == "Chair").RotationY.Should().BeApproximately(30f, 0.01f);
+    }
 }

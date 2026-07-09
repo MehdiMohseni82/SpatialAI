@@ -72,6 +72,22 @@ public class BudgetTests
     }
 
     [Fact]
+    public void Anonymous_user_without_a_registered_row_still_gets_their_allowance()
+    {
+        var auth = NewAuth();
+        var b = Make(auth, perUser: 3, global: 1000);
+        var anon = Guid.NewGuid().ToString("N");   // an open/dev-mode uid that was never registered
+
+        b.Remaining(anon).Should().Be(3);
+        b.TryConsume(anon, out var rem).Should().BeTrue();   // used to fail: no users row → 0 rows updated
+        rem.Should().Be(2);
+        b.TryConsume(anon, out _).Should().BeTrue();
+        b.TryConsume(anon, out _).Should().BeTrue();
+        b.TryConsume(anon, out var last).Should().BeFalse(); // per-user cap still enforced
+        last.Should().Be(0);
+    }
+
+    [Fact]
     public void Usage_persists_across_restart_and_re_login()
     {
         var auth = NewAuth();

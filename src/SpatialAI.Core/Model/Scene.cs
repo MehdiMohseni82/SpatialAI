@@ -52,6 +52,13 @@ public sealed class Item
     /// <summary>Rotation around the vertical (Y) axis, in degrees.</summary>
     public float RotationY { get; set; }
 
+    /// <summary>
+    /// True when this item's facing was auto-derived (a seat with no explicit orientation) rather than
+    /// set by the caller (<c>faceItem</c>/<c>rotationY</c>/wall anchor). Such seats may be re-faced later
+    /// when a surface is added near them, so a chair created before its desk still ends up facing it.
+    /// </summary>
+    public bool AutoFacing { get; set; }
+
     /// <summary>Primary color (per-part colors live on <see cref="Parts"/>).</summary>
     public Rgba Color { get; set; } = Rgba.Gray;
 
