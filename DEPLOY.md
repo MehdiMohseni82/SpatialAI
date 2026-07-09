@@ -38,6 +38,8 @@ docker compose up -d --build
 | `Auth__RequireVerification` | `true` | Email magic-link verification. **Set `false`** to sign users in immediately after register (no email) — the hedge if conference email is flaky; still captures the email. |
 | `Email__{Host,Port,User,Pass,From}` | — | SMTP for magic links (only when verification is on). |
 | `PublicMode` | `true` | Disables the vision/blueprint import token-sink. |
+| `Suggestions__UseLlm` | `true` | Follow-up suggestion chips: deterministic always; when `true`, a short LLM call refines them (never spends a message credit, only fires when a user has > `Suggestions__MinBudgetForLlm` left). Set **`false`** on the public server to keep suggestions completely token-free. |
+| `Suggestions__MinBudgetForLlm` | `8` | Skip the LLM refinement once a user's remaining messages drop to/below this. |
 
 All state persists in the `spatialai-data` volume (`/data`: `catalog.db`, `app.db`, `spaces/`, `keys/`).
 It survives `docker compose up --build`. Back it up if you want to keep the captured emails.
