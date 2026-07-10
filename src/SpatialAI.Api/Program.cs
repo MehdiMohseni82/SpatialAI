@@ -162,7 +162,8 @@ if (app.Configuration.GetValue("Auth:Required", false))
 // ── Scene ────────────────────────────────────────────────────────────────
 app.MapGet("/api/scene", (SceneHub hub) => Results.Content(hub.CurrentJson(), "application/json"));
 
-app.MapPost("/api/reset", (SceneStore store) => { store.Reset(); return Results.Ok(); });
+// Reset clears BOTH the scene and the conversation memory (the chat transcript the LLM uses as context).
+app.MapPost("/api/reset", (SceneStore store, SpaceManager spaces) => { store.Reset(); spaces.ClearChat(); return Results.Ok(); });
 
 // Seed a sample scene (offline fallback / quick demo without the LLM).
 app.MapPost("/api/seed", (SceneStore store, SceneTools tools) =>

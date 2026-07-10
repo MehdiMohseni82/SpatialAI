@@ -81,6 +81,20 @@ public class SpaceManagerTests : IDisposable
     }
 
     [Fact]
+    public void ClearChat_EmptiesTheTranscript_AndPersistsForASavedSpace()
+    {
+        _manager.AppendChat(new[] { new ChatMessage("user", "hi"), new ChatMessage("ai", "hello") });
+        _manager.SaveAs("Chatty");                 // persist so we also cover the re-write path
+        _manager.CurrentChat().Should().HaveCount(2);
+
+        _manager.ClearChat();
+
+        _manager.CurrentChat().Should().BeEmpty();
+        _manager.Open(_manager.Current.Id)!.Name.Should().Be("Chatty");
+        _manager.CurrentChat().Should().BeEmpty();  // stays empty after reopening the saved space
+    }
+
+    [Fact]
     public void List_And_Delete()
     {
         _tools.CreateRoom("A", 3, 3);

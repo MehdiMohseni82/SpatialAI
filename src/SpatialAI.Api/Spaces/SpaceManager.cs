@@ -114,6 +114,17 @@ public sealed class SpaceManager
         }
     }
 
+    /// <summary>Clears the active space's conversation transcript (the LLM's context memory), re-writing the
+    /// space if it is already persisted. Used by Reset so the scene and the chat clear together.</summary>
+    public void ClearChat()
+    {
+        lock (_gate)
+        {
+            _current.Chat.Clear();
+            if (_repo.Exists(_current.Id)) _repo.Save(_current);
+        }
+    }
+
     /// <summary>Saves a copy of an existing space under a new id/name without changing the active space.</summary>
     public SpaceSummary? Duplicate(Guid id)
     {
