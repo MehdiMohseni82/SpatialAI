@@ -865,7 +865,8 @@ window.addEventListener('keydown', (e) => {
 });
 
 document.getElementById('btn-reset').onclick = () =>
-  fetch('/api/reset', { method: 'POST' }).then(() => { loadChat(); refreshSuggestions(); });   // clear scene + chat memory
+  fetch('/api/reset', { method: 'POST' })
+    .then(() => { rerenderScene(); loadChat(); refreshSuggestions(); });   // force the empty redraw + clear chat memory (don't rely on SSE)
 
 // ── Spaces manager (gallery + autosave) ──────────────────────────────────────
 const spaceCurrentEl = document.getElementById('space-current');
