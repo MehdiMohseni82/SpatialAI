@@ -78,10 +78,6 @@ public sealed class ChatEngine
         Omit both to let the system auto-place items in free space. Keep replies short; after calling
         tools, briefly confirm what you did.
 
-        Enclosures: to fence or wall around a room/yard, call enclose_room — it rings the perimeter with
-        four thin segments (grouped). NEVER stretch a single fence across an area: a fence's depth is its
-        thickness, so a large depth fills the whole footprint instead of ringing it.
-
         Grouping: relate items with create_group + add_to_group (e.g. a production line, a racking zone)
         so the whole set can be repositioned with move_group or removed with delete_group as one unit.
 
@@ -534,15 +530,6 @@ public sealed class ChatEngine
                 rackKind = new { type = "string", description = "Rack kind: pallet_rack (default), cantilever_rack, shelving_unit" },
                 roomName = new { type = "string", description = "Optional target room" },
                 anchor = new { type = "string", description = "Where to place the block: 'center', 'wall:<dir>', 'corner[:..]', 'near:<item>'." }
-            }
-        }),
-        Tool("enclose_room", "Build a fence/wall around a room's PERIMETER from four thin segments (grouped), optionally leaving one wall open as a gateway. Use this for 'fence/wall around the yard' — never stretch a single fence to enclose an area, which fills the whole footprint.", new {
-            type = "object",
-            properties = new {
-                roomName = new { type = "string", description = "Optional target room (defaults to the most recent room)" },
-                kind = new { type = "string", description = "Barrier kind: fence (default), hedge, or railing" },
-                height = new { type = "number", description = "Optional barrier height (m)" },
-                gateWall = new { type = "string", @enum = new[] { "north", "south", "east", "west" }, description = "Optional wall to leave open for an entrance" }
             }
         }),
         Tool("list_scene", "List the rooms and items currently in the scene.", new { type = "object", properties = new { } }),

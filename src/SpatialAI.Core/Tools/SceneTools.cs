@@ -727,68 +727,6 @@ public sealed class SceneTools(SceneStore store)
         });
     }
 
-    /// <summary>
-    /// Rings a room's perimeter with a fence/wall built from FOUR thin segments (one per edge), grouped
-    /// so the whole enclosure moves/deletes as a unit. Use this for "fence/wall around the yard": a single
-    /// stretched fence would carpet the whole footprint instead of ringing it. Optionally leave one wall
-    /// open as a gateway.
-    /// </summary>
-    public string EncloseRoom(string? roomName = null, string kind = "fence",
-        float? height = null, string? gateWall = null)
-    {
-        var k = FurnitureFactory.IsKnown(kind) ? kind : "fence";
-        var gate = string.IsNullOrWhiteSpace(gateWall) ? null : NormalizeWall(gateWall);
-
-        return store.Mutate(s =>
-        {
-            var room = ResolveRoom(s, roomName);
-            if (room is null) return "No room to enclose. Create a room first.";
-
-            var group = new Group { Name = $"{room.Name} Fence" };
-            s.Groups.Add(group);
-
-            const float thickness = 0.1f;
-            float cx = room.Center.X, cz = room.Center.Z;
-            float hw = room.Width / 2f, hd = room.Depth / 2f;
-
-            // Each edge: a thin segment as long as that wall, set just inside the footprint and turned to
-            // run along the wall (N/S run along X at 0°; E/W run along Z at 90°).
-            var sides = new[]
-            {
-                (wall: "north", len: room.Width, px: cx,                       pz: cz - hd + thickness / 2f, rot: 0f),
-                (wall: "south", len: room.Width, px: cx,                       pz: cz + hd - thickness / 2f, rot: 0f),
-                (wall: "west",  len: room.Depth, px: cx - hw + thickness / 2f, pz: cz,                       rot: 90f),
-                (wall: "east",  len: room.Depth, px: cx + hw - thickness / 2f, pz: cz,                       rot: 90f),
-            };
-
-            var built = 0;
-            foreach (var side in sides)
-            {
-                if (gate is not null && side.wall == gate) continue;
-                var b = FurnitureFactory.Build(k, side.len, height, thickness, null);
-                if (b is null) continue;
-                s.Items.Add(new Item
-                {
-                    Name = $"{char.ToUpperInvariant(k[0])}{k[1..]} {char.ToUpperInvariant(side.wall[0])}{side.wall[1..]}",
-                    Shape = b.Parts.Count == 1 ? b.Parts[0].Shape : Shape.Box,
-                    Size = b.Size,
-                    Position = new Vec3(side.px, room.Elevation + b.Size.Y / 2f, side.pz),
-                    RotationY = side.rot,
-                    Color = b.Primary,
-                    Parts = b.Parts,
-                    Kind = FurnitureFactory.Normalize(k),
-                    RoomId = room.Id,
-                    Level = room.Level,
-                    GroupId = group.Id
-                });
-                built++;
-            }
-
-            s.Highlights.Clear();
-            var opening = gate is not null ? $", open on the {gate} side" : "";
-            return $"Enclosed '{room.Name}' with {built} {k} segment(s){opening} (grouped as '{group.Name}').";
-        });
-    }
 
     /// <summary>Builds a catalog item and adds it to the scene at (px,pz), resting on the floor, in a group.</summary>
     private static void AddCatalogItem(Model.Scene s, string name, string kind, float px, float pz,

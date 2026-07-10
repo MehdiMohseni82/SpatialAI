@@ -203,14 +203,6 @@ public sealed class SceneTools(SpatialApiClient api)
         [Description("center | wall:<dir> | corner[:..] | near:<item>")] string? anchor = null)
         => api.InvokeAsync("create_rack_aisles", new { name, rows, racksPerRow, aisleWidth, rackKind, roomName, anchor });
 
-    [McpServerTool(Name = "enclose_room"), Description("Build a fence/wall around a room's perimeter from four thin segments (grouped), optionally leaving one wall open as a gateway. Use for 'fence/wall around the yard' instead of stretching one fence, which fills the whole footprint.")]
-    public Task<string> EncloseRoom(
-        [Description("Optional target room")] string? roomName = null,
-        [Description("Barrier kind: fence (default), hedge, railing")] string kind = "fence",
-        [Description("Optional barrier height (m)")] float? height = null,
-        [Description("Optional wall to leave open as a gateway: north | south | east | west")] string? gateWall = null)
-        => api.InvokeAsync("enclose_room", new { roomName, kind, height, gateWall });
-
     [McpServerTool(Name = "list_scene"), Description("List the rooms and items currently in the scene.")]
     public Task<string> ListScene()
         => api.InvokeAsync("list_scene", new { });

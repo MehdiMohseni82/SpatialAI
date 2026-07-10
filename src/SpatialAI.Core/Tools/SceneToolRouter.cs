@@ -17,8 +17,7 @@ public static class SceneToolRouter
         "add_window", "add_door", "add_partition", "set_ceiling", "set_roof", "set_building_roof",
         "arrange_around", "arrange_on",
         "create_group", "add_to_group", "move_group", "delete_group",
-        "create_warehouse", "create_production_line", "create_rack_aisles",
-        "enclose_room"
+        "create_warehouse", "create_production_line", "create_rack_aisles"
     ];
 
     public static string Invoke(SceneTools tools, string name, JsonElement a)
@@ -64,7 +63,6 @@ public static class SceneToolRouter
             "create_warehouse" => tools.CreateWarehouse(Str("name", "Warehouse"), ReqF("width", 24f), ReqF("depth", 36f), ReqF("height", 8f), ReqI("dockDoors", 2)),
             "create_production_line" => tools.CreateProductionLine(Str("name", "Production Line"), ReqI("stations", 4), OptS("roomName"), OptS("anchor"), OptF("spacing")),
             "create_rack_aisles" => tools.CreateRackAisles(Str("name", "Racking"), ReqI("rows", 3), ReqI("racksPerRow", 4), OptF("aisleWidth"), OptS("rackKind") ?? "pallet_rack", OptS("roomName"), OptS("anchor")),
-            "enclose_room" => tools.EncloseRoom(OptS("roomName"), OptS("kind") ?? "fence", OptF("height"), OptS("gateWall")),
             "list_scene" => tools.ListScene(),
             "find_unused_areas" => tools.FindUnusedAreas(OptS("roomName")),
             "analyze_ergonomics" => tools.AnalyzeErgonomics(OptS("roomName"), OptF("userX"), OptF("userZ")),
