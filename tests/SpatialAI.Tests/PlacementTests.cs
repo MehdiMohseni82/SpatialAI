@@ -52,6 +52,46 @@ public class PlacementTests
     }
 
     [Fact]
+    public void CeilingLight_HangsFromTheCeiling_NotTheFloor()
+    {
+        var (store, tools) = New();
+        tools.CreateRoom("Office", 6, 5);                 // default wall height 2.5 m
+        tools.CreateItem("Light", "ceiling_light");
+
+        var light = Only(store, "Light");
+        light.Position.Y.Should().BeApproximately(2.5f - light.Size.Y / 2f, 0.01f); // top touches the ceiling
+        light.Position.Y.Should().BeGreaterThan(2.0f);                              // clearly not on the floor
+    }
+
+    [Fact]
+    public void Move_OnSurfaceItem_KeepsItsHeight_DoesNotDropToFloor()
+    {
+        var (store, tools) = New();
+        tools.CreateRoom("Office", 6, 5);
+        tools.CreateItem("Desk", "desk", positionX: 0, positionZ: 0);
+        tools.CreateItem("Monitor", "monitor", onItem: "Desk");
+        var yBefore = Only(store, "Monitor").Position.Y;
+        yBefore.Should().BeGreaterThan(0.5f);   // sitting up on the desk
+
+        tools.MoveItem("Monitor", 1.0f, 0.5f);
+
+        Only(store, "Monitor").Position.Y.Should().BeApproximately(yBefore, 0.01f); // kept its height
+    }
+
+    [Fact]
+    public void Move_CeilingLight_StaysOnTheCeiling()
+    {
+        var (store, tools) = New();
+        tools.CreateRoom("Office", 6, 5);
+        tools.CreateItem("Light", "ceiling_light");
+        var yBefore = Only(store, "Light").Position.Y;
+
+        tools.MoveItem("Light", 1.5f, 1.5f);
+
+        Only(store, "Light").Position.Y.Should().BeApproximately(yBefore, 0.01f);
+    }
+
+    [Fact]
     public void Move_StrayItem_IsReadoptedByTheRoom()
     {
         var (store, tools) = New();

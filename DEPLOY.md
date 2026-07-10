@@ -40,8 +40,7 @@ docker compose up -d --build
 | `PublicMode` | `true` | Disables the vision/blueprint import token-sink. |
 | `Suggestions__UseLlm` | `true` | Follow-up suggestion chips: deterministic always; when `true`, a short LLM call refines them (never spends a message credit, only fires when a user has > `Suggestions__MinBudgetForLlm` left). Set **`false`** on the public server to keep suggestions completely token-free. |
 | `Suggestions__MinBudgetForLlm` | `8` | Skip the LLM refinement once a user's remaining messages drop to/below this. |
-| `Vision__Enabled` | `false` | Screenshot "vision gate": when `true`, each turn sends a BEFORE scene screenshot to Claude for context and, after the change renders, an AFTER screenshot for a one-shot correction pass (fixes visible facing/overlap issues). Sends images to Anthropic and **raises per-turn token cost** — recommend **off** on the public server, on locally for the demo. Never spends a message credit; skipped when a user's budget is low. |
-| `LLM__VisionModel` | (= `LLM__Model`) | Optional model for the vision gate + plan import; point at a Sonnet-tier model for sharper visual reasoning. |
+| `LLM__VisionModel` | (= `LLM__Model`) | Optional model for plan import (Claude vision); point at a Sonnet-tier model for sharper plan extraction. |
 
 All state persists in the `spatialai-data` volume (`/data`: `catalog.db`, `app.db`, `spaces/`, `keys/`).
 It survives `docker compose up --build`. Back it up if you want to keep the captured emails.

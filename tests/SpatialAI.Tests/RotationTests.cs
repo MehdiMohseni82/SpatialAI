@@ -181,4 +181,25 @@ public class RotationTests
         // The chair had an explicit rotationY (AutoFacing == false) → the surface must not turn it.
         store.Current.Items.Single(i => i.Name == "Chair").RotationY.Should().BeApproximately(30f, 0.01f);
     }
+
+    [Fact]
+    public void Desk_placed_against_a_wall_faces_into_the_room()
+    {
+        var (store, tools) = New();
+        tools.CreateRoom("Office", 6, 5);                       // center (0,0), north wall at Z = +2.5
+        tools.CreateItem("Desk", "desk", positionX: 0, positionZ: 2.0f);   // pushed to the north wall
+
+        // Back to the north wall → front faces south (180°), into the room — not at the wall.
+        store.Current.Items.Single(i => i.Name == "Desk").RotationY.Should().BeApproximately(180f, 0.01f);
+    }
+
+    [Fact]
+    public void Desk_in_the_room_center_keeps_the_default_facing()
+    {
+        var (store, tools) = New();
+        tools.CreateRoom("Office", 6, 5);
+        tools.CreateItem("Desk", "desk", positionX: 0, positionZ: 0);   // free-standing, not near any wall
+
+        store.Current.Items.Single(i => i.Name == "Desk").RotationY.Should().BeApproximately(0f, 0.01f);
+    }
 }

@@ -132,14 +132,17 @@ public sealed class SceneTools(SceneStore store)
 
             var (px, pz, py) = Place(s, room, size, rotationY ?? AnchorRotation(anchor, room) ?? 0f, positionX, positionZ, anchor, onItem, ignore: null);
             var storey = StoreyRoomAt(s, px, pz, room);  // the room the item actually sits in (null = outdoors)
+            // Ceiling-mounted kinds hang from the ceiling instead of resting on the floor.
+            if (catalogKind is not null && CeilingKinds.Contains(catalogKind) && storey is not null)
+                py = storey.Elevation + storey.Height - size.Y / 2f;
 
             var item = new Item
             {
                 Name = string.IsNullOrWhiteSpace(name) ? "Item" : name,
                 Shape = parts.Count == 1 ? parts[0].Shape : Shape.Box,
                 Size = size,
-                Position = new Vec3(px, py, pz),  // floor, or on top of onItem's surface
-                RotationY = ResolveFacing(s, storey, catalogKind, px, pz, rotationY, faceItem, anchor, onItem),
+                Position = new Vec3(px, py, pz),  // floor, ceiling, or on top of onItem's surface
+                RotationY = ResolveFacing(s, storey, catalogKind, size, px, pz, rotationY, faceItem, anchor, onItem),
                 // Facing is "auto" (re-faceable later) only when the caller gave no explicit orientation.
                 AutoFacing = faceItem is null && rotationY is null && string.IsNullOrWhiteSpace(anchor),
                 Color = primary,
@@ -224,13 +227,21 @@ public sealed class SceneTools(SceneStore store)
         { "chair", "stool", "armchair", "office_chair", "dining_chair", "bench" };
     private static readonly HashSet<string> SurfaceKinds = new(StringComparer.OrdinalIgnoreCase)
         { "desk", "computer_desk", "table", "dining_table", "coffee_table", "kitchen_island", "kitchen_counter", "workbench" };
+    // Kinds that hang from the ceiling rather than resting on the floor.
+    private static readonly HashSet<string> CeilingKinds = new(StringComparer.OrdinalIgnoreCase)
+        { "ceiling_light", "chandelier" };
+    // Furniture that normally stands against a wall — placed near one, it turns its front into the room.
+    private static readonly HashSet<string> WallFacingKinds = new(StringComparer.OrdinalIgnoreCase)
+        { "desk", "computer_desk", "table", "dining_table", "coffee_table", "kitchen_island", "kitchen_counter",
+          "workbench", "bed", "single_bed", "double_bed", "king_bed", "bunk_bed", "bookshelf", "wardrobe",
+          "nightstand", "tv", "sofa", "sectional_sofa" };
 
     /// <summary>
     /// Resolves an item's Y rotation deterministically so the model never computes facing by hand:
     /// an explicit <paramref name="faceItem"/> target wins; else an explicit <paramref name="rotationY"/>;
     /// else a seat with no orientation auto-faces the nearest surface in its room; else 0 (faces +Z).
     /// </summary>
-    private static float ResolveFacing(Model.Scene s, Room? room, string? kind,
+    private static float ResolveFacing(Model.Scene s, Room? room, string? kind, Vec3 size,
         float px, float pz, float? rotationY, string? faceItem, string? anchor = null, string? onItem = null)
     {
         // 1) Explicit target wins (deterministic, general — any item).
@@ -258,7 +269,32 @@ public sealed class SceneTools(SceneStore store)
                 return pz > room.Center.Z ? 180f : 0f; // north corner faces south, and vice-versa
             if (AnchorRotation(anchor, room) is { } ar) return ar;
         }
+        // 5) A surface / against-wall item that landed near a wall turns its front into the room (so a desk
+        //    "near the north window" faces the room, not the wall). Free-standing items keep the default 0°.
+        if (room is not null && !string.IsNullOrEmpty(kind) && WallFacingKinds.Contains(kind)
+            && NearestWallRotation(room, px, pz, size) is { } wr)
+            return wr;
         return 0f;
+    }
+
+    /// <summary>
+    /// If an item at (px,pz) with <paramref name="size"/> sits close to one of the room's four walls,
+    /// returns the Y rotation that turns its front INTO the room (back to that wall); else null when it's
+    /// free-standing. Uses the same wall→angle mapping as <see cref="AnchorRotation"/>.
+    /// </summary>
+    private static float? NearestWallRotation(Room room, float px, float pz, Vec3 size)
+    {
+        var halfW = room.Width / 2f; var halfD = room.Depth / 2f;
+        var cN = (room.Center.Z + halfD) - pz - size.Z / 2f;   // clearance to north (+Z) wall
+        var cS = pz - (room.Center.Z - halfD) - size.Z / 2f;   // south (-Z)
+        var cE = (room.Center.X + halfW) - px - size.X / 2f;   // east (+X)
+        var cW = px - (room.Center.X - halfW) - size.X / 2f;   // west (-X)
+        var min = MathF.Min(MathF.Min(cN, cS), MathF.Min(cE, cW));
+        if (min > 0.5f) return null;                            // not against any wall → free-standing
+        if (min == cN) return 180f;                             // back to north wall → face south (into room)
+        if (min == cS) return 0f;                               // back to south wall → face north
+        if (min == cE) return -90f;                             // back to east wall → face west
+        return 90f;                                             // back to west wall → face east
     }
 
     private static float Dist2(float ax, float az, float bx, float bz)
@@ -416,7 +452,7 @@ public sealed class SceneTools(SceneStore store)
                 Shape = Shape.Box,
                 Size = built.Size,
                 Position = new Vec3(px, py, pz),
-                RotationY = ResolveFacing(s, storey, null, px, pz, null, faceItem, anchor),
+                RotationY = ResolveFacing(s, storey, null, built.Size, px, pz, null, faceItem, anchor),
                 Color = primary,
                 Parts = built.Parts,
                 RoomId = storey?.Id,
@@ -449,7 +485,15 @@ public sealed class SceneTools(SceneStore store)
 
             item.RoomId = storey?.Id;
             item.Level = storey?.Level ?? 0;
-            item.Position = new Vec3(px, (storey?.Elevation ?? 0f) + item.Size.Y / 2f, pz); // re-rest on the floor
+            // Keep the item's mounting when moving: ceiling items stay on the ceiling, floor items re-rest on
+            // the floor, and items on a surface (a monitor on a desk) keep their height instead of dropping.
+            var oldFloor = room?.Elevation ?? 0f;
+            var wasOnFloor = MathF.Abs((item.Position.Y - item.Size.Y / 2f) - oldFloor) < 0.15f;
+            var newY = item.Kind is not null && CeilingKinds.Contains(item.Kind) && storey is not null
+                ? storey.Elevation + storey.Height - item.Size.Y / 2f
+                : wasOnFloor ? (storey?.Elevation ?? 0f) + item.Size.Y / 2f
+                : item.Position.Y;
+            item.Position = new Vec3(px, newY, pz);
             // Re-orient wall/corner placements to face into the room (reuses the create-time logic).
             if (storey is not null && anchor is not null && anchor.Trim().StartsWith("wall", StringComparison.OrdinalIgnoreCase))
                 item.RotationY = anchorRot ?? item.RotationY;

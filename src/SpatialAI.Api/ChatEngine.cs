@@ -10,10 +10,9 @@ using SpatialAI.Core.Tools;
 namespace SpatialAI.Api;
 
 public sealed record ChatTurn(string Role, string Content);
-public sealed record ChatRequest(string Message, List<ChatTurn>? History, string? BeforeImage = null);
-public sealed record VerifyRequest(string AfterImage, string Request);
+public sealed record ChatRequest(string Message, List<ChatTurn>? History);
 public sealed record ChatReply(string Assistant, List<string> Actions, int? MessagesRemaining = null,
-    bool BudgetExhausted = false, List<string>? Suggestions = null, bool VisionCheck = false);
+    bool BudgetExhausted = false, List<string>? Suggestions = null);
 
 /// <summary>
 /// Runs the Claude (Anthropic) tool-use loop. Every tool the model can call maps to a method on
@@ -29,10 +28,7 @@ public sealed class ChatEngine
     private readonly List<ToolUnion> _toolDefs;
     private readonly bool _useLlmSuggestions;
     private readonly int _minBudgetForLlm;
-    private readonly bool _visionEnabled;
-    private readonly string _visionModel;
     private const int MaxToolRounds = 12;   // hard loop cap (backstop for the token budget)
-    private const int VerifyRounds = 4;     // bounded correction pass (no recursive re-verify)
     private const int MaxOutputTokens = 1024;
 
     private const string SystemPrompt = """
@@ -111,15 +107,9 @@ public sealed class ChatEngine
         // never spends a message credit and only fires while a user's budget is comfortably above this floor.
         _useLlmSuggestions = !string.Equals(config["Suggestions:UseLlm"], "false", StringComparison.OrdinalIgnoreCase);
         _minBudgetForLlm = int.TryParse(config["Suggestions:MinBudgetForLlm"], out var m) && m >= 0 ? m : 8;
-        // Vision gate: OFF unless explicitly enabled (it sends scene screenshots to Claude + costs tokens).
-        _visionEnabled = string.Equals(config["Vision:Enabled"], "true", StringComparison.OrdinalIgnoreCase);
-        _visionModel = config["LLM:VisionModel"] ?? _model;
     }
 
     public bool IsConfigured => _client is not null;
-
-    /// <summary>Whether the screenshot vision gate is turned on (and Claude is configured).</summary>
-    public bool VisionEnabled => _visionEnabled && _client is not null;
 
     /// <summary>
     /// One chat turn: enforce the caller's message budget, then run the Claude tool-use loop
@@ -152,13 +142,8 @@ public sealed class ChatEngine
             else if (turn.Kind == "user") messages.Add(new MessageParam { Role = Role.User, Content = turn.Text });
             // "tool" lines are UI-only and are not replayed to the model
         }
-        // Volatile scene JSON + the new user message go LAST, after the cached prefix. When the vision gate
-        // is on and the client sent a screenshot, attach it so the model can SEE the current scene.
-        var userText = BuildSceneContext(store) + "\n\n" + request.Message;
-        var beforeBlock = _visionEnabled ? ImageBlock(request.BeforeImage) : null;
-        messages.Add(beforeBlock is null
-            ? new MessageParam { Role = Role.User, Content = userText }
-            : new MessageParam { Role = Role.User, Content = new List<ContentBlockParam> { new TextBlockParam { Text = userText }, beforeBlock } });
+        // Volatile scene JSON + the new user message go LAST, after the cached prefix.
+        messages.Add(new MessageParam { Role = Role.User, Content = BuildSceneContext(store) + "\n\n" + request.Message });
 
         var actions = new List<string>();
         long inTok = 0, outTok = 0, cacheRead = 0;
@@ -214,102 +199,7 @@ public sealed class ChatEngine
         // Deterministic follow-up suggestions ride along with the reply (instant, free). The client may
         // then upgrade them to LLM-refined ones via GET /api/suggestions?refine=1 — off the reply's path.
         return new ChatReply(text, actions, MessagesRemaining: remaining,
-            Suggestions: SuggestionEngine.Suggest(store.Current), VisionCheck: VisionEnabled);
-    }
-
-    /// <summary>
-    /// The screenshot "correcting gate": given an AFTER screenshot of the scene the user just changed, a
-    /// single (bounded) vision tool-use pass that fixes obvious visual mistakes (wrong facing, overlap,
-    /// floating, bad placement) or does nothing if it already looks right. Records tokens but never spends
-    /// a message credit; skipped when the gate is off, unconfigured, or the user's budget is low.
-    /// </summary>
-    public async Task<List<string>> VerifyAsync(string? afterImage, string requestText,
-        SceneTools tools, SceneStore store, SpaceManager spaces, string userId, CancellationToken ct)
-    {
-        var actions = new List<string>();
-        if (!VisionEnabled || _budget.Remaining(userId) <= _minBudgetForLlm) return actions;
-        var img = ImageBlock(afterImage);
-        if (img is null) return actions;
-
-        var system = new List<TextBlockParam>
-        {
-            new() { Text = SystemPrompt.Replace("{KINDS}", FurnitureFactory.DescribeKinds()), CacheControl = new CacheControlEphemeral() },
-        };
-        var instruction =
-            $"The user just asked: \"{requestText}\".\n\n" +
-            "The attached image is a screenshot of the CURRENT 3D scene. Compare it with the request and look " +
-            "for obvious visual problems: an item facing the wrong way, items overlapping or clipping, an item " +
-            "floating above the floor, or something clearly out of place. If something is wrong, call tools to " +
-            "FIX it (move_item, rotate_item, or re-create with a faceItem/anchor) — make at most a couple of " +
-            "small corrections. If the scene already matches the request and looks correct, reply DONE and call " +
-            "no tools.\n\n" + BuildSceneContext(store);
-        var messages = new List<MessageParam>
-        {
-            new() { Role = Role.User, Content = new List<ContentBlockParam> { new TextBlockParam { Text = instruction }, img } },
-        };
-
-        long inTok = 0, outTok = 0, cacheRead = 0;
-        for (var round = 0; round < VerifyRounds; round++)
-        {
-            var resp = await _client!.Messages.Create(new MessageCreateParams
-            {
-                Model = _visionModel,
-                MaxTokens = MaxOutputTokens,
-                System = system,
-                Tools = _toolDefs,
-                Messages = messages,
-            }, cancellationToken: ct);
-
-            inTok += resp.Usage.InputTokens;
-            outTok += resp.Usage.OutputTokens;
-            cacheRead += resp.Usage.CacheReadInputTokens ?? 0;
-
-            var assistant = new List<ContentBlockParam>();
-            var toolResults = new List<ContentBlockParam>();
-            foreach (var block in resp.Content)
-            {
-                if (block.TryPickText(out TextBlock? t))
-                    assistant.Add(new TextBlockParam { Text = t.Text });
-                else if (block.TryPickToolUse(out ToolUseBlock? tu))
-                {
-                    assistant.Add(new ToolUseBlockParam { ID = tu.ID, Name = tu.Name, Input = tu.Input });
-                    var result = Dispatch(tu.Name, JsonSerializer.SerializeToElement(tu.Input), tools, spaces);
-                    actions.Add(result);
-                    toolResults.Add(new ToolResultBlockParam { ToolUseID = tu.ID, Content = result });
-                }
-            }
-
-            if (resp.StopReason != "tool_use" || toolResults.Count == 0) break;
-            messages.Add(new MessageParam { Role = Role.Assistant, Content = assistant });
-            messages.Add(new MessageParam { Role = Role.User, Content = toolResults });
-        }
-
-        _budget.RecordTokens(userId, inTok, outTok, cacheRead);
-        if (actions.Count > 0)
-            spaces.AppendChat(actions.Select(a => new Spaces.ChatMessage("tool", a)).ToList());
-        return actions;
-    }
-
-    /// <summary>Builds an Anthropic image content block from a data URL (or bare base64), or null.</summary>
-    private static ContentBlockParam? ImageBlock(string? dataUrl)
-    {
-        if (string.IsNullOrWhiteSpace(dataUrl)) return null;
-        string mime = "image/jpeg", data = dataUrl;
-        if (dataUrl.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
-        {
-            var comma = dataUrl.IndexOf(',');
-            if (comma < 0) return null;
-            var header = dataUrl[5..comma];                 // e.g. "image/jpeg;base64"
-            data = dataUrl[(comma + 1)..];
-            var semi = header.IndexOf(';');
-            mime = semi > 0 ? header[..semi] : header;
-        }
-        if (string.IsNullOrWhiteSpace(data)) return null;
-        return ImageBlockParam.FromRawUnchecked(new Dictionary<string, JsonElement>
-        {
-            ["type"] = JsonSerializer.SerializeToElement("image"),
-            ["source"] = JsonSerializer.SerializeToElement(new { type = "base64", media_type = mime, data }),
-        });
+            Suggestions: SuggestionEngine.Suggest(store.Current));
     }
 
     /// <summary>

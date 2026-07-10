@@ -4,8 +4,7 @@ import { TransformControls } from 'three/addons/controls/TransformControls.js';
 
 // ── Renderer / scene / camera ──────────────────────────────────────────────
 const app = document.getElementById('app');
-// preserveDrawingBuffer lets us read the canvas back (toDataURL) for the vision gate's screenshots.
-const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setPixelRatio(window.devicePixelRatio);
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.shadowMap.enabled = true;
@@ -543,38 +542,6 @@ function populateStoreys() {
 // Re-fetch + re-render the scene (used when the wall material changes — walls are baked at build time).
 async function rerenderScene() {
   try { const s = await (await fetch('/api/scene')).json(); applyFull(s); } catch {}
-}
-
-// ── Vision gate (opt-in) ─────────────────────────────────────────────────────
-// When enabled server-side, each turn sends a BEFORE screenshot (context) and, after the scene renders,
-// an AFTER screenshot for a one-shot correction pass. `visionEnabled` comes from /api/me on load.
-let visionEnabled = false;
-
-// Capture the current canvas as a downscaled JPEG data URL (~1024px wide) to keep the payload small.
-function captureScene(maxW = 1024) {
-  try {
-    renderer.render(scene, camera);              // ensure the latest frame is in the (preserved) buffer
-    const src = renderer.domElement;
-    const scale = Math.min(1, maxW / src.width);
-    const c = document.createElement('canvas');
-    c.width = Math.max(1, Math.round(src.width * scale));
-    c.height = Math.max(1, Math.round(src.height * scale));
-    c.getContext('2d').drawImage(src, 0, 0, c.width, c.height);
-    return c.toDataURL('image/jpeg', 0.85);
-  } catch { return null; }
-}
-
-// Wait for the just-mutated scene to actually paint, then capture the AFTER frame and run the gate.
-async function runVisionGate(message) {
-  await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
-  const afterImage = captureScene();
-  if (!afterImage) return;
-  const data = await jsonFetch('/api/chat/verify', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ afterImage, request: message })
-  });
-  const acts = (data && data.actions) || [];
-  for (const a of acts) addMessage('tool', '🔍 ' + a);   // corrections the vision gate applied
 }
 
 const btnStyle = document.getElementById('btn-style');
@@ -1329,13 +1296,10 @@ async function send() {
   addMessage('user', message);
   const pending = addMessage('ai', '…');
 
-  // BEFORE screenshot (vision gate on): the canvas still shows the pre-prompt scene — capture it now.
-  const beforeImage = visionEnabled ? captureScene() : null;
-
   try {
     const res = await fetch('/api/chat', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(beforeImage ? { message, beforeImage } : { message })
+      body: JSON.stringify({ message })
     });
     const data = await res.json();
     pending.remove();
@@ -1345,9 +1309,7 @@ async function send() {
     // Instant deterministic chips from the reply; then quietly upgrade to LLM-refined ones (non-blocking).
     if (data.budgetExhausted) renderSuggestions([]);
     else { renderSuggestions(data.suggestions); refreshSuggestions(); }
-    await rerenderScene();   // pull the final scene + redraw — mobile SSE/rAF can stall while the keyboard is up
-    // AFTER screenshot correcting gate — non-blocking, only when the server says vision is on.
-    if (data.visionCheck) runVisionGate(message).catch(() => {});
+    rerenderScene();   // pull the final scene + redraw — mobile SSE/rAF can stall while the keyboard is up
   } catch (err) {
     pending.textContent = 'Request failed: ' + err;
   }
@@ -1425,7 +1387,6 @@ function renderStatus() {
     }
     if (me.mcpToken) setupConnect(me.mcpToken);   // signed-in: offer the "Connect Claude Desktop" panel
     if (typeof me.messagesRemaining === 'number') messagesRemaining = me.messagesRemaining;
-    visionEnabled = me.visionEnabled === true;    // capture/send screenshots only when the gate is on
   } catch { /* open/dev mode or offline — carry on */ }
   try {
     const { configured } = await (await fetch('/api/configured')).json();

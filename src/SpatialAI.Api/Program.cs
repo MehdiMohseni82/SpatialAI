@@ -229,16 +229,6 @@ app.MapPost("/api/chat", async (HttpContext http, ChatRequest req, ChatEngine en
 
 app.MapGet("/api/chat/history", (SpaceManager spaces) => Results.Ok(spaces.CurrentChat()));
 
-// Vision "correcting gate": the client posts an AFTER screenshot of the scene it just changed; when the
-// gate is enabled the model looks for visible mistakes (wrong facing, overlap, floating…) and fixes them.
-app.MapPost("/api/chat/verify", async (HttpContext http, VerifyRequest req, ChatEngine engine,
-    SceneTools tools, SceneStore store, SpaceManager spaces, CancellationToken ct) =>
-{
-    var uid = (string)http.Items["uid"]!;
-    var actions = await engine.VerifyAsync(req.AfterImage, req.Request, tools, store, spaces, uid, ct);
-    return Results.Ok(new { actions });
-});
-
 // Context-aware follow-up suggestions for the current (tenant) scene. Deterministic by default;
 // `?refine=1` runs the hybrid path (LLM refinement when configured + budget healthy).
 app.MapGet("/api/suggestions", async (HttpContext http, string? refine, SceneStore store, ChatEngine engine,
@@ -353,7 +343,7 @@ app.MapPost("/api/auth/logout", (HttpContext http) =>
 });
 
 // Identity + budget snapshot; the SPA uses this on load to decide whether to redirect to /register.html.
-app.MapGet("/api/me", (HttpContext http, AuthRepository auth, BudgetStore budget, ChatEngine engine, IConfiguration cfg) =>
+app.MapGet("/api/me", (HttpContext http, AuthRepository auth, BudgetStore budget, IConfiguration cfg) =>
 {
     var uid = (string)http.Items["uid"]!;
     var authed = http.Items["authed"] is true;
@@ -369,7 +359,6 @@ app.MapGet("/api/me", (HttpContext http, AuthRepository auth, BudgetStore budget
         authRequired = cfg.GetValue("Auth:Required", false),
         authenticated = authed,
         importEnabled = cfg.GetValue("Import:Enabled", false),   // plan import (vision) is opt-in
-        visionEnabled = engine.VisionEnabled,   // screenshot before/after gate (opt-in) → client captures only when on
         name,
         email = mail,
         mcpToken,                   // only ever returned to the authenticated owner of this session

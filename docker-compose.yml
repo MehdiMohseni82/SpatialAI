@@ -17,9 +17,6 @@ services:
       Import__Enabled: ${IMPORT_ENABLED:-false}
       Import__MessageCost: ${IMPORT_COST:-5}
       LLM__VisionModel: ${VISION_MODEL:-}
-      # Vision gate (before/after screenshot correction). Off by default — it sends scene screenshots to
-      # Anthropic and raises per-turn token cost. Set VISION_ENABLED=true in .env to turn it on.
-      Vision__Enabled: ${VISION_ENABLED:-false}
       # Auth: set AUTH_REQUIRE_VERIFICATION=false to skip the email round-trip (still captures emails)
       # if conference wifi / deliverability is risky on the day.
       Auth__RequireVerification: ${AUTH_REQUIRE_VERIFICATION:-true}
